@@ -1,36 +1,15 @@
-pragma solidity 0.4.24;
-pragma experimental ABIEncoderV2;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
 
+// Modern Chainlink and OpenZeppelin imports
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-//Truffle Imports
-import "chainlink/contracts/ChainlinkClient.sol";
-import "chainlink/contracts/vendor/Ownable.sol";
-import "chainlink/contracts/interfaces/LinkTokenInterface.sol";
-import "chainlink/contracts/interfaces/AggregatorInterface.sol";
-import "chainlink/contracts/vendor/SafeMathChainlink.sol";
-import "chainlink/contracts/interfaces/AggregatorV3Interface.sol";
-
-/**
- * @dev Contract module that helps prevent reentrant calls to a function.
- * Simple reentrancy protection for Solidity 0.4.24
- */
-contract ReentrancyGuard {
-    uint256 private constant _NOT_ENTERED = 1;
-    uint256 private constant _ENTERED = 2;
-
-    uint256 private _status;
-
-    constructor() internal {
-        _status = _NOT_ENTERED;
-    }
-
-    modifier nonReentrant() {
-        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
-        _status = _ENTERED;
-        _;
-        _status = _NOT_ENTERED;
-    }
-}
+// ReentrancyGuard is now imported from OpenZeppelin
 
 // Remix imports - used when testing in remix
 // import "https://github.com/smartcontractkit/chainlink/blob/develop/
@@ -49,10 +28,9 @@ contract ReentrancyGuard {
 
 
 
-contract InsuranceProvider {
-
-    using SafeMathChainlink for uint256;
-    address public insurer = msg.sender;
+contract InsuranceProvider is Ownable {
+    // Built-in overflow protection in Solidity 0.8+, no SafeMath needed
+    address public insurer;
     AggregatorV3Interface internal priceFeed;
 
     // How many seconds in a day. 60 for testing, 86400 for Production
@@ -71,26 +49,18 @@ contract InsuranceProvider {
     string public weatherbitKey;
 
     constructor(
-        string _worldWeatherKey,
-        string _openWeatherKey,
-        string _weatherbitKey
-    )
-        public
-        payable
-    {
+        string memory _worldWeatherKey,
+        string memory _openWeatherKey,
+        string memory _weatherbitKey
+    ) payable {
+        insurer = msg.sender;
         priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
         worldWeatherOnlineKey = _worldWeatherKey;
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
     }
 
-    /**
-     * @dev Prevents a function being run unless it's called by the Insurance Provider
-     */
-    modifier onlyOwner() {
-        require(insurer == msg.sender, "Only insurer can do this");
-        _;
-    }
+    // Using OpenZeppelin's Ownable instead of custom modifier
 
     /**
      * @dev Event to log when a contract is created
@@ -116,17 +86,17 @@ contract InsuranceProvider {
         uint256 _duration,
         uint256 _premium,
         uint256 _payoutValue,
-        string _cropLocation
+        string memory _cropLocation
     )
         public
         payable
-        onlyOwner()
+        onlyOwner
         returns (address)
     {
         // Create contract, send payout amount so contract is fully funded plus a small buffer
-        InsuranceContract i = (new InsuranceContract).value(
-            (_payoutValue * 1 ether).div(uint256(getLatestPrice()))
-        )(
+        uint256 fundingAmount = (_payoutValue * 1 ether) / uint256(getLatestPrice());
+        
+        InsuranceContract i = new InsuranceContract{value: fundingAmount}(
             _client,
             _duration,
             _premium,
@@ -147,7 +117,7 @@ contract InsuranceProvider {
         // Now that contract has been created, we need to fund it with enough LINK tokens
         // to fulfil 1 Oracle request per day, with a small buffer added
         LinkTokenInterface link = LinkTokenInterface(i.getChainlinkToken());
-        uint256 linkAmount = ((_duration.div(DAY_IN_SECONDS)) + 2) * ORACLE_PAYMENT.mul(2);
+        uint256 linkAmount = ((_duration / DAY_IN_SECONDS) + 2) * ORACLE_PAYMENT * 2;
         link.transfer(address(i), linkAmount);
 
         return address(i);
@@ -254,13 +224,12 @@ contract InsuranceProvider {
     /**
      * @dev Fallback function to receive ether
      */
-    function() external payable { }
+    receive() external payable { }
 
 }
 
 contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
-
-    using SafeMathChainlink for uint256;
+    // Built-in overflow protection in Solidity 0.8+, no SafeMath needed
     AggregatorV3Interface internal priceFeed;
 
     // How many seconds in a day. 60 for testing, 86400 for Production
@@ -299,7 +268,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     bool public contractActive; // Is the contract currently active, or has it ended
     bool public contractPaid = false;
     uint256 public currentRainfall = 0; // What is the current rainfall for the location
-    uint256 public currentRainfallDateChecked = now; // When the last rainfall check was performed
+    uint256 public currentRainfallDateChecked = block.timestamp; // When the last rainfall check was performed
     uint256 public requestCount = 0; // How many requests for rainfall data have been made
     uint256 public dataRequestsSent = 0; // Variable used to determine if both requests have been sent
 
@@ -316,7 +285,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Prevents a function being run unless the Insurance Contract duration has been reached
      */
     modifier onContractEnded() {
-        if (startDate + duration < now) {
+        if (startDate + duration < block.timestamp) {
           _;
         }
     }
@@ -335,7 +304,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      */
     modifier callFrequencyOncePerDay() {
         require(
-            now.sub(currentRainfallDateChecked) > (DAY_IN_SECONDS.sub(DAY_IN_SECONDS.div(12))),
+            block.timestamp - currentRainfallDateChecked > (DAY_IN_SECONDS - (DAY_IN_SECONDS / 12)),
             "Can only check rainfall once per day"
         );
         _;
@@ -356,17 +325,13 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         uint256 _duration,
         uint256 _premium,
         uint256 _payoutValue,
-        string _cropLocation,
+        string memory _cropLocation,
         address _link,
         uint256 _oraclePaymentAmount,
-        string _worldWeatherKey,
-        string _openWeatherKey,
-        string _weatherbitKey
-    )
-        public
-        payable
-        Ownable()
-    {
+        string memory _worldWeatherKey,
+        string memory _openWeatherKey,
+        string memory _weatherbitKey
+    ) payable {
 
         //set ETH/USD Price Feed
         priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
@@ -381,7 +346,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         //now initialize values for the contract
         insurer= msg.sender;
         client = _client;
-        startDate = now ; //contract will be effective immediately on creation
+        startDate = block.timestamp; // Contract will be effective immediately on creation
         duration = _duration;
         premium = _premium;
         payoutValue = _payoutValue;
@@ -501,8 +466,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
 
        //set current rainfall to average of both values
        if (dataRequestsSent > 1) {
-          currentRainfall = (currentRainfallList[0].add(currentRainfallList[1]).div(2));
-          currentRainfallDateChecked = now;
+          currentRainfall = (currentRainfallList[0] + currentRainfallList[1]) / 2;
+          currentRainfallDateChecked = block.timestamp;
           requestCount +=1;
 
           //check if payout conditions have been met, if so call payoutcontract, which should also end/kill contract at the end
@@ -545,7 +510,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         uint256 linkBalance = link.balanceOf(address(this));
         
         // Emit event with state changes
-        emit contractPaidOut(now, payoutValue, currentRainfall);
+        emit contractPaidOut(block.timestamp, payoutValue, currentRainfall);
         
         // INTERACTIONS: External calls AFTER state changes
         // Transfer ETH to client
@@ -564,7 +529,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     function checkEndContract() private onContractEnded() nonReentrant() {
         // CHECKS: Ensure contract can be ended
         require(contractActive == true, "Contract already ended");
-        require(startDate + duration < now, "Contract has not expired yet");
+        require(startDate + duration < block.timestamp, "Contract has not expired yet");
         
         // EFFECTS: Update state variables BEFORE external calls
         contractActive = false;
@@ -585,11 +550,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             if (clientRefund > ethBalance) {
                 clientRefund = ethBalance;
             }
-            insurerAmount = ethBalance.sub(clientRefund);
+            insurerAmount = ethBalance - clientRefund;
         }
         
         // Emit event with final contract state
-        emit contractEnded(now, ethBalance);
+        emit contractEnded(block.timestamp, ethBalance);
         
         // INTERACTIONS: External calls AFTER state changes
         // Transfer client refund if applicable
@@ -635,7 +600,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     /**
      * @dev Get the Crop Location
      */
-    function getLocation() external view returns (string) {
+    function getLocation() external view returns (string memory) {
         return cropLocation;
     }
 
@@ -715,8 +680,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     /**
      * @dev Get the current date/time according to the blockchain
      */
-    function getNow() external view returns (uint) {
-        return now;
+    function getNow() external view returns (uint256) {
+        return block.timestamp;
     }
 
     /**
@@ -744,7 +709,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     /**
      * @dev Helper function for converting uint to a string
      */
-    function uint2str(uint _i) internal pure returns (string memory _uintAsString) {
+    function uint2str(uint256 _i) internal pure returns (string memory _uintAsString) {
         if (_i == 0) {
             return "0";
         }
@@ -757,16 +722,18 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         bytes memory bstr = new bytes(len);
         uint k = len - 1;
         while (_i != 0) {
-            bstr[k--] = byte(uint8(48 + _i % 10));
+            bstr[k--] = bytes1(uint8(48 + _i % 10));
             _i /= 10;
         }
         return string(bstr);
     }
 
     /**
-     * @dev Fallback function so contrat can receive ether when required
+     * @dev Fallback function so contract can receive ether when required
      */
-    function() external payable {  }
+    receive() external payable { }
+    
+    fallback() external payable { }
 
 
 }
