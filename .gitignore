@@ -40,3 +40,8 @@ jspm_packages
 .node_repl_history
 unbox.sh
 
+# Environment variables
+.env
+.env.local
+.env.production
+

@@ -1,0 +1,15 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "compiler-version": "off",
+    "max-line-length": ["error", 120],
+    "not-rely-on-time": "off",
+    "avoid-low-level-calls": "off",
+    "avoid-call-value": "off",
+    "one-contract-per-file": "off",
+    "no-global-import": "off",
+    "import-path-check": "off",
+    "reason-string": ["error", {"maxLength": 40}],
+    "no-unused-vars": "off"
+  }
+}
