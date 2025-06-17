@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.17;
 
 // Modern Chainlink and OpenZeppelin imports
 import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
@@ -8,6 +8,9 @@ import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // ReentrancyGuard is now imported from OpenZeppelin
 
@@ -29,9 +32,11 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 
 contract InsuranceProvider is Ownable {
+    using SafeERC20 for IERC20;
+    
     // Built-in overflow protection in Solidity 0.8+, no SafeMath needed
     address public insurer;
-    AggregatorV3Interface internal priceFeed;
+    AggregatorV3Interface internal ethUsdPriceFeed;
 
     // How many seconds in a day. 60 for testing, 86400 for Production
     uint256 public constant DAY_IN_SECONDS = 60;
@@ -42,6 +47,15 @@ contract InsuranceProvider is Ownable {
 
     // Here is where all the insurance contracts are stored.
     mapping(address => InsuranceContract) public contracts;
+    
+    // Supported payment tokens
+    mapping(address => bool) public supportedTokens;
+    mapping(address => AggregatorV3Interface) public tokenPriceFeeds;
+    
+    // Common stablecoin addresses (to be set for each network)
+    address public USDC;
+    address public DAI;
+    address public USDT;
 
     // API Keys for weather data
     string public worldWeatherOnlineKey;
@@ -52,12 +66,15 @@ contract InsuranceProvider is Ownable {
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
         string memory _weatherbitKey
-    ) payable {
+    ) {
         insurer = msg.sender;
-        priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        ethUsdPriceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
         worldWeatherOnlineKey = _worldWeatherKey;
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
+        
+        // ETH is always supported
+        supportedTokens[address(0)] = true;
     }
 
     // Using OpenZeppelin's Ownable instead of custom modifier
@@ -67,9 +84,13 @@ contract InsuranceProvider is Ownable {
      */
     event ContractCreated(
         address indexed insuranceContract,
+        address indexed paymentToken,
         uint256 premium,
         uint256 totalCover
     );
+    
+    event TokenAdded(address indexed token, address priceFeed);
+    event TokenRemoved(address indexed token);
 
 
     /**
@@ -79,6 +100,7 @@ contract InsuranceProvider is Ownable {
      * @param _premium Premium amount in USD
      * @param _payoutValue Payout value in USD
      * @param _cropLocation Location of the crop for weather data
+     * @param _paymentToken Token address for premium payment (address(0) for ETH)
      * @return Address of the created insurance contract
      */
     function newContract(
@@ -86,15 +108,26 @@ contract InsuranceProvider is Ownable {
         uint256 _duration,
         uint256 _premium,
         uint256 _payoutValue,
-        string memory _cropLocation
+        string memory _cropLocation,
+        address _paymentToken
     )
         public
         payable
         onlyOwner
         returns (address)
     {
-        // Create contract, send payout amount so contract is fully funded plus a small buffer
-        uint256 fundingAmount = (_payoutValue * 1 ether) / uint256(getLatestPrice());
+        require(supportedTokens[_paymentToken], "Payment token not supported");
+        
+        // Calculate funding amount based on payment token
+        uint256 fundingAmount;
+        if (_paymentToken == address(0)) {
+            // ETH payment - send ETH to contract
+            fundingAmount = (_payoutValue * 1 ether) / uint256(getLatestPrice());
+            require(msg.value >= fundingAmount, "Insufficient ETH sent");
+        } else {
+            // ERC20 payment - no ETH needed for contract creation
+            fundingAmount = 0;
+        }
         
         InsuranceContract i = new InsuranceContract{value: fundingAmount}(
             _client,
@@ -102,6 +135,7 @@ contract InsuranceProvider is Ownable {
             _premium,
             _payoutValue,
             _cropLocation,
+            _paymentToken,
             LINK_KOVAN,
             ORACLE_PAYMENT,
             worldWeatherOnlineKey,
@@ -110,9 +144,16 @@ contract InsuranceProvider is Ownable {
         );
 
         contracts[address(i)] = i; // Store insurance contract in contracts Map
+        
+        // Handle token transfers based on payment type
+        if (_paymentToken != address(0)) {
+            // Transfer ERC20 tokens from insurer to the new contract
+            uint256 tokenAmount = getTokenAmountForUSD(_paymentToken, _payoutValue);
+            IERC20(_paymentToken).safeTransferFrom(msg.sender, address(i), tokenAmount);
+        }
 
         // Emit an event to say the contract has been created and funded
-        emit ContractCreated(address(i), msg.value, _payoutValue);
+        emit ContractCreated(address(i), _paymentToken, _premium, _payoutValue);
 
         // Now that contract has been created, we need to fund it with enough LINK tokens
         // to fulfil 1 Oracle request per day, with a small buffer added
@@ -201,7 +242,7 @@ contract InsuranceProvider is Ownable {
             link.transfer(msg.sender, link.balanceOf(address(this))),
             "Unable to transfer"
         );
-        selfdestruct(insurer);
+        selfdestruct(payable(insurer));
     }
 
     /**
@@ -215,10 +256,114 @@ contract InsuranceProvider is Ownable {
             uint256 startedAt,
             uint256 timeStamp,
             uint80 answeredInRound
-        ) = priceFeed.latestRoundData();
+        ) = ethUsdPriceFeed.latestRoundData();
         // If the round is not complete yet, timestamp is 0
         require(timeStamp > 0, "Round not complete");
         return price;
+    }
+
+    /**
+     * @dev Add a new supported payment token
+     * @param token Address of the ERC20 token (address(0) for ETH)
+     * @param priceFeed Chainlink price feed for token/USD conversion
+     */
+    function addSupportedToken(address token, address priceFeed) external onlyOwner {
+        require(priceFeed != address(0), "Invalid price feed");
+        supportedTokens[token] = true;
+        tokenPriceFeeds[token] = AggregatorV3Interface(priceFeed);
+        
+        // Set common token addresses for easy reference
+        if (token != address(0)) {
+            IERC20Metadata tokenContract = IERC20Metadata(token);
+            string memory symbol = tokenContract.symbol();
+            
+            if (keccak256(bytes(symbol)) == keccak256(bytes("USDC"))) {
+                USDC = token;
+            } else if (keccak256(bytes(symbol)) == keccak256(bytes("DAI"))) {
+                DAI = token;
+            } else if (keccak256(bytes(symbol)) == keccak256(bytes("USDT"))) {
+                USDT = token;
+            }
+        }
+        
+        emit TokenAdded(token, priceFeed);
+    }
+    
+    /**
+     * @dev Remove a supported payment token
+     * @param token Address of the token to remove
+     */
+    function removeSupportedToken(address token) external onlyOwner {
+        require(token != address(0), "Cannot remove ETH");
+        supportedTokens[token] = false;
+        delete tokenPriceFeeds[token];
+        
+        if (token == USDC) USDC = address(0);
+        if (token == DAI) DAI = address(0);
+        if (token == USDT) USDT = address(0);
+        
+        emit TokenRemoved(token);
+    }
+    
+    /**
+     * @dev Get the token amount needed for a specific USD value
+     * @param token Token address
+     * @param usdAmount USD amount with 8 decimals
+     * @return Token amount needed
+     */
+    function getTokenAmountForUSD(address token, uint256 usdAmount) public view returns (uint256) {
+        require(supportedTokens[token], "Token not supported");
+        require(token != address(0), "Use ETH calculation for native token");
+        
+        AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
+        require(address(priceFeed) != address(0), "Price feed not set");
+        
+        (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+        require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        
+        // Calculate token amount needed
+        // USD amount has 8 decimals, price has 8 decimals
+        uint256 tokenAmount = (usdAmount * 1e18) / uint256(price);
+        
+        // Adjust for token decimals
+        uint8 tokenDecimals = IERC20Metadata(token).decimals();
+        if (tokenDecimals < 18) {
+            tokenAmount = tokenAmount / 10**(18 - tokenDecimals);
+        }
+        
+        return tokenAmount;
+    }
+    
+    /**
+     * @dev Get the USD value of a token amount
+     * @param token Token address (address(0) for ETH)
+     * @param amount Amount of tokens
+     * @return USD value with 8 decimals
+     */
+    function getTokenValueInUSD(address token, uint256 amount) public view returns (uint256) {
+        require(supportedTokens[token], "Token not supported");
+        
+        if (token == address(0)) {
+            // ETH price calculation
+            int256 ethPrice = getLatestPrice();
+            return (amount * uint256(ethPrice)) / 1e18;
+        } else {
+            // ERC20 token price calculation
+            AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
+            require(address(priceFeed) != address(0), "Price feed not set");
+            
+            (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+            require(timeStamp > 0, "Round not complete");
+            
+            // Adjust for token decimals (assuming most stablecoins use 6 decimals)
+            uint8 tokenDecimals = IERC20Metadata(token).decimals();
+            if (tokenDecimals < 18) {
+                amount = amount * 10**(18 - tokenDecimals);
+            }
+            
+            return (amount * uint256(price)) / 1e18;
+        }
     }
 
     /**
@@ -229,6 +374,8 @@ contract InsuranceProvider is Ownable {
 }
 
 contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    
     // Built-in overflow protection in Solidity 0.8+, no SafeMath needed
     AggregatorV3Interface internal priceFeed;
 
@@ -245,6 +392,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     uint256 public premium;
     uint256 public payoutValue;
     string public cropLocation;
+    address public paymentToken; // Token used for premium payment
 
 
     uint256[2] public currentRainfallList;
@@ -326,12 +474,13 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         uint256 _premium,
         uint256 _payoutValue,
         string memory _cropLocation,
+        address _paymentToken,
         address _link,
         uint256 _oraclePaymentAmount,
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
         string memory _weatherbitKey
-    ) payable {
+    ) {
 
         //set ETH/USD Price Feed
         priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
@@ -340,16 +489,19 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         setChainlinkToken(_link);
         oraclePaymentAmount = _oraclePaymentAmount;
 
-        //first ensure insurer has fully funded the contract
-        require(msg.value >= _payoutValue.div(uint(getLatestPrice())), "Not enough funds sent to contract");
+        //first ensure insurer has fully funded the contract (for ETH payments)
+        if (_paymentToken == address(0)) {
+            require(msg.value >= _payoutValue / uint256(getLatestPrice()), "Not enough funds sent to contract");
+        }
 
         //now initialize values for the contract
-        insurer= msg.sender;
+        insurer = msg.sender; // This will be the InsuranceProvider contract address
         client = _client;
         startDate = block.timestamp; // Contract will be effective immediately on creation
         duration = _duration;
         premium = _premium;
         payoutValue = _payoutValue;
+        paymentToken = _paymentToken;
         daysWithoutRain = 0;
         contractActive = true;
         cropLocation = _cropLocation;
@@ -424,8 +576,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     function checkRainfall(
         address _oracle,
         bytes32 _jobId,
-        string _url,
-        string _path
+        string memory _url,
+        string memory _path
     )
         private
         onContractActive()
@@ -433,7 +585,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     {
 
         //First build up a request to get the current rainfall
-        Chainlink.Request memory req = buildChainlinkRequest(\n            _jobId,\n            address(this),\n            this.checkRainfallCallBack.selector\n        );
+        Chainlink.Request memory req = buildChainlinkRequest(
+            _jobId,
+            address(this),
+            this.checkRainfallCallBack.selector
+        );
 
         req.add("get", _url); //sends the GET request to the oracle
         req.add("path", _path);
@@ -498,14 +654,12 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         // CHECKS: Ensure contract is in valid state for payout
         require(contractActive == true, "Contract must be active");
         require(contractPaid == false, "Contract already paid out");
-        require(address(this).balance > 0, "No funds available for payout");
         
         // EFFECTS: Update state variables BEFORE external calls
         contractActive = false;
         contractPaid = true;
         
         // Store values for external calls
-        uint256 ethBalance = address(this).balance;
         LinkTokenInterface link = LinkTokenInterface(chainlinkTokenAddress());
         uint256 linkBalance = link.balanceOf(address(this));
         
@@ -513,8 +667,18 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         emit contractPaidOut(block.timestamp, payoutValue, currentRainfall);
         
         // INTERACTIONS: External calls AFTER state changes
-        // Transfer ETH to client
-        client.transfer(ethBalance);
+        // Transfer payout based on payment token type
+        if (paymentToken == address(0)) {
+            // ETH payout
+            require(address(this).balance > 0, "No ETH funds available");
+            payable(client).transfer(address(this).balance);
+        } else {
+            // ERC20 token payout
+            IERC20 token = IERC20(paymentToken);
+            uint256 tokenBalance = token.balanceOf(address(this));
+            require(tokenBalance > 0, "No token funds available");
+            SafeERC20.safeTransfer(token, client, tokenBalance);
+        }
         
         // Transfer remaining LINK tokens back to insurer
         if (linkBalance > 0) {
@@ -534,37 +698,65 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         // EFFECTS: Update state variables BEFORE external calls
         contractActive = false;
         
-        // Calculate amounts and store for external calls
-        uint256 ethBalance = address(this).balance;
+        // Store LINK balance for later transfer
         LinkTokenInterface link = LinkTokenInterface(chainlinkTokenAddress());
         uint256 linkBalance = link.balanceOf(address(this));
         
-        // Determine fund distribution
-        uint256 clientRefund = 0;
-        uint256 insurerAmount = ethBalance;
-        
-        // Check if insurer met minimum data request requirements
-        if (requestCount < (duration.div(DAY_IN_SECONDS) - 2)) {
-            // Insurer didn't meet requirements, client gets premium refund
-            clientRefund = premium.div(uint(getLatestPrice()));
-            if (clientRefund > ethBalance) {
-                clientRefund = ethBalance;
-            }
-            insurerAmount = ethBalance - clientRefund;
-        }
-        
-        // Emit event with final contract state
-        emit contractEnded(block.timestamp, ethBalance);
+        // Emit event before transfers
+        emit contractEnded(block.timestamp, 0);
         
         // INTERACTIONS: External calls AFTER state changes
-        // Transfer client refund if applicable
-        if (clientRefund > 0) {
-            client.transfer(clientRefund);
-        }
-        
-        // Transfer remaining ETH to insurer
-        if (insurerAmount > 0) {
-            insurer.transfer(insurerAmount);
+        if (paymentToken == address(0)) {
+            // ETH payment flow
+            uint256 ethBalance = address(this).balance;
+            uint256 clientRefund = 0;
+            uint256 insurerAmount = ethBalance;
+            
+            // Check if insurer met minimum data request requirements
+            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
+                // Insurer didn't meet requirements, client gets premium refund in ETH
+                clientRefund = premium / uint256(getLatestPrice());
+                if (clientRefund > ethBalance) {
+                    clientRefund = ethBalance;
+                }
+                insurerAmount = ethBalance - clientRefund;
+            }
+            
+            // Transfer ETH refunds
+            if (clientRefund > 0) {
+                payable(client).transfer(clientRefund);
+            }
+            
+            if (insurerAmount > 0) {
+                payable(insurer).transfer(insurerAmount);
+            }
+        } else {
+            // ERC20 token payment flow
+            IERC20 token = IERC20(paymentToken);
+            uint256 tokenBalance = token.balanceOf(address(this));
+            uint256 clientRefund = 0;
+            uint256 insurerAmount = tokenBalance;
+            
+            // Check if insurer met minimum data request requirements
+            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
+                // Calculate client refund in tokens - use a simplified approach
+                // For now, refund a proportional amount of the token balance based on premium ratio
+                // This is a simplified calculation; in production, you might want more sophisticated logic
+                clientRefund = tokenBalance / 10; // Refund 10% as basic premium refund
+                if (clientRefund > tokenBalance) {
+                    clientRefund = tokenBalance;
+                }
+                insurerAmount = tokenBalance - clientRefund;
+            }
+            
+            // Transfer token refunds using SafeERC20
+            if (clientRefund > 0) {
+                token.safeTransfer(client, clientRefund);
+            }
+            
+            if (insurerAmount > 0) {
+                token.safeTransfer(insurer, insurerAmount);
+            }
         }
         
         // Transfer remaining LINK tokens back to insurer
@@ -583,7 +775,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             uint startedAt,
             uint timeStamp,
             uint80 answeredInRound
-        ) = priceFeed.latestRoundData();
+        ) = ethUsdPriceFeed.latestRoundData();
         // If the round is not complete yet, timestamp is 0
         require(timeStamp > 0, "Round not complete");
         return price;

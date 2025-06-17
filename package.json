@@ -11,7 +11,11 @@
     "lint": "yarn solhint",
     "migrate:dev": "npx truffle migrate --reset --network cldev",
     "migrate:live": "npx truffle migrate --network live",
-    "test": "NODE_ENV=test npx truffle test"
+    "migrate:sepolia": "npx truffle migrate --network sepolia",
+    "test": "NODE_ENV=test npx truffle test",
+    "test:multitoken": "NODE_ENV=test npx truffle test test/MultiToken_test.js",
+    "test:tokens": "NODE_ENV=test npx truffle test test/MultiToken_test.js --grep 'Token Configuration'",
+    "test:integration": "NODE_ENV=test npx truffle test test/MultiToken_test.js --grep 'Integration Tests'"
   },
   "license": "MIT",
   "dependencies": {
