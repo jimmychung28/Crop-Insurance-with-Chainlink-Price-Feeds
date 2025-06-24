@@ -15,7 +15,11 @@
     "test": "NODE_ENV=test npx truffle test",
     "test:multitoken": "NODE_ENV=test npx truffle test test/MultiToken_test.js",
     "test:tokens": "NODE_ENV=test npx truffle test test/MultiToken_test.js --grep 'Token Configuration'",
-    "test:integration": "NODE_ENV=test npx truffle test test/MultiToken_test.js --grep 'Integration Tests'"
+    "test:integration": "NODE_ENV=test npx truffle test test/MultiToken_test.js --grep 'Integration Tests'",
+    "test:premium": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js",
+    "test:premium-payment": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js --grep 'Premium Payment'",
+    "test:premium-refund": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js --grep 'Premium Refunds'",
+    "demo:premium": "npx truffle exec scripts/premium-collection-example.js --network development"
   },
   "license": "MIT",
   "dependencies": {
