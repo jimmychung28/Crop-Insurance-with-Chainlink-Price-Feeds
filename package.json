@@ -19,7 +19,13 @@
     "test:premium": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js",
     "test:premium-payment": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js --grep 'Premium Payment'",
     "test:premium-refund": "NODE_ENV=test npx truffle test test/PremiumCollection_test.js --grep 'Premium Refunds'",
-    "demo:premium": "npx truffle exec scripts/premium-collection-example.js --network development"
+    "test:automation": "NODE_ENV=test npx truffle test test/AutomatedWeatherMonitoring_test.js",
+    "test:automation-interface": "NODE_ENV=test npx truffle test test/AutomatedWeatherMonitoring_test.js --grep 'Chainlink Automation Interface'",
+    "test:automation-batch": "NODE_ENV=test npx truffle test test/AutomatedWeatherMonitoring_test.js --grep 'Batch Processing'",
+    "demo:premium": "npx truffle exec scripts/premium-collection-example.js --network development",
+    "setup:automation": "npx truffle exec scripts/setup-automation.js --network development",
+    "manual:weather": "npx truffle exec scripts/manual-weather-update.js --network development",
+    "deploy:automated": "npx truffle migrate --f 4 --to 4 --network development"
   },
   "license": "MIT",
   "dependencies": {
