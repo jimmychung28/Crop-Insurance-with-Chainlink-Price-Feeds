@@ -15,6 +15,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+// EAS imports
+import "./eas/interfaces/IEASInsurance.sol";
+import "./eas/EASInsuranceManager.sol";
+
 /**
  * @title AutomatedInsuranceProvider
  * @dev Insurance provider with Chainlink Automation for automated weather monitoring
@@ -24,6 +28,10 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
     
     address public insurer;
     AggregatorV3Interface internal ethUsdPriceFeed;
+    
+    // EAS integration
+    EASInsuranceManager public easManager;
+    bool public easEnabled = false;
 
     // Constants
     uint256 public constant DAY_IN_SECONDS = 86400; // Production: 86400, Testing: 60
@@ -94,6 +102,12 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
     event ContractDeactivated(address indexed contractAddress);
     event TokenAdded(address indexed token, address priceFeed);
     event TokenRemoved(address indexed token);
+    
+    // EAS events
+    event EASManagerSet(address indexed easManager);
+    event EASToggled(bool enabled);
+    event PolicyAttestationCreated(address indexed contract_, bytes32 attestationUID);
+    event PremiumAttestationCreated(address indexed contract_, bytes32 attestationUID);
 
     constructor(
         string memory _worldWeatherKey,
@@ -109,6 +123,24 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         // ETH is always supported
         supportedTokens[address(0)] = true;
         lastUpkeepTimestamp = block.timestamp;
+    }
+    
+    /**
+     * @dev Set EAS Manager contract
+     */
+    function setEASManager(address _easManager) external onlyOwner {
+        require(_easManager != address(0), "Invalid EAS manager address");
+        easManager = EASInsuranceManager(_easManager);
+        emit EASManagerSet(_easManager);
+    }
+    
+    /**
+     * @dev Toggle EAS integration on/off
+     */
+    function toggleEAS(bool _enabled) external onlyOwner {
+        require(address(easManager) != address(0), "EAS manager not set");
+        easEnabled = _enabled;
+        emit EASToggled(_enabled);
     }
 
     /**
@@ -252,6 +284,25 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         link.transfer(address(insurance), linkAmount);
 
         emit ContractCreated(address(insurance), _client, _paymentToken, _premium, _payoutValue);
+        
+        // Create EAS policy attestation if enabled
+        if (easEnabled && address(easManager) != address(0)) {
+            try easManager.createPolicyAttestation(
+                address(insurance),
+                _client,
+                _premium,
+                _payoutValue,
+                _cropLocation,
+                block.timestamp,
+                _duration,
+                false // Not active until premium is paid
+            ) returns (bytes32 attestationUID) {
+                emit PolicyAttestationCreated(address(insurance), attestationUID);
+            } catch {
+                // Continue execution if EAS fails
+            }
+        }
+        
         return address(insurance);
     }
 
@@ -290,6 +341,21 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         
         emit PremiumPaid(_contract, msg.sender, info.token, info.amount);
         emit ContractActivated(_contract);
+        
+        // Create EAS premium attestation if enabled
+        if (easEnabled && address(easManager) != address(0)) {
+            try easManager.createPremiumAttestation(
+                _contract,
+                msg.sender,
+                info.amount,
+                info.token,
+                true // Premium paid
+            ) returns (bytes32 attestationUID) {
+                emit PremiumAttestationCreated(_contract, attestationUID);
+            } catch {
+                // Continue execution if EAS fails
+            }
+        }
     }
 
     /**
@@ -444,6 +510,20 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         }
         
         return tokenAmount;
+    }
+    
+    /**
+     * @dev Get EAS manager address
+     */
+    function getEASManager() external view returns (address) {
+        return address(easManager);
+    }
+    
+    /**
+     * @dev Check if EAS is enabled
+     */
+    function isEASEnabled() external view returns (bool) {
+        return easEnabled && address(easManager) != address(0);
     }
 
     receive() external payable { }
@@ -614,6 +694,9 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         _requestWeatherData();
         
         emit AutomatedWeatherCheckPerformed(block.timestamp, currentRainfall);
+        
+        // Create EAS weather attestation if EAS is enabled
+        _createWeatherAttestation(currentRainfall);
     }
 
     /**
@@ -693,6 +776,27 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
             }
         }
     }
+    
+    /**
+     * @dev Create weather attestation through EAS
+     */
+    function _createWeatherAttestation(uint256 rainfall) internal {
+        AutomatedInsuranceProvider provider = AutomatedInsuranceProvider(insurer);
+        
+        if (provider.easEnabled() && address(provider.easManager()) != address(0)) {
+            try provider.easManager().createWeatherAttestation(
+                cropLocation,
+                rainfall,
+                "Multi-source Weather API",
+                bytes32(requestCount), // Use request count as oracle request ID
+                true // Verified through multiple sources
+            ) returns (bytes32 attestationUID) {
+                emit WeatherAttestationCreated(attestationUID, rainfall);
+            } catch {
+                // Continue execution if EAS fails
+            }
+        }
+    }
 
     /**
      * @dev Execute payout when drought conditions are met
@@ -716,6 +820,9 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         require(link.transfer(insurer, link.balanceOf(address(this))), "Unable to transfer remaining LINK");
         
         emit contractPaidOut(block.timestamp, payoutValue, currentRainfall);
+        
+        // Create EAS claim attestation
+        _createClaimAttestation(payoutValue, 3); // Status 3 = paid
     }
 
     /**
@@ -790,6 +897,33 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     function getRequestCount() external view returns (uint256) { return requestCount; }
     function getDaysWithoutRain() external view returns (uint256) { return daysWithoutRain; }
     function getChainlinkToken() public view returns (address) { return chainlinkTokenAddress(); }
+    
+    /**
+     * @dev Create claim attestation through EAS
+     */
+    function _createClaimAttestation(uint256 claimAmount, uint8 status) internal {
+        AutomatedInsuranceProvider provider = AutomatedInsuranceProvider(insurer);
+        
+        if (provider.easEnabled() && address(provider.easManager()) != address(0)) {
+            string memory evidence = string(abi.encodePacked(
+                "Drought conditions met: ",
+                "Days without rain: ", daysWithoutRain,
+                ", Final rainfall: ", currentRainfall
+            ));
+            
+            try provider.easManager().createClaimAttestation(
+                address(this),
+                claimAmount,
+                status,
+                evidence,
+                true // Drought confirmed
+            ) returns (bytes32 attestationUID) {
+                emit ClaimAttestationCreated(attestationUID, claimAmount);
+            } catch {
+                // Continue execution if EAS fails
+            }
+        }
+    }
 
     receive() external payable { }
 }

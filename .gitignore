@@ -45,3 +45,13 @@ unbox.sh
 .env.local
 .env.production
 
+# Foundry
+lib/
+cache_foundry/
+out/
+broadcast/
+
+# Foundry cache and artifacts (Hardhat compatibility)
+cache/
+artifacts/
+
