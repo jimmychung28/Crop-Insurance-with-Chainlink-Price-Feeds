@@ -25,7 +25,17 @@
     "demo:premium": "npx truffle exec scripts/premium-collection-example.js --network development",
     "setup:automation": "npx truffle exec scripts/setup-automation.js --network development",
     "manual:weather": "npx truffle exec scripts/manual-weather-update.js --network development",
-    "deploy:automated": "npx truffle migrate --f 4 --to 4 --network development"
+    "deploy:automated": "npx truffle migrate --f 4 --to 4 --network development",
+    "forge:build": "forge build",
+    "forge:test": "forge test -vv",
+    "forge:test:premium": "forge test --match-contract PremiumCollection -vv",
+    "forge:test:automation": "forge test --match-contract AutomatedWeatherMonitoring -vv",
+    "forge:test:gas": "forge test --match-contract GasOptimization -vv",
+    "forge:test:coverage": "forge coverage",
+    "forge:test:gas-report": "forge test --gas-report",
+    "forge:clean": "forge clean",
+    "forge:fmt": "forge fmt",
+    "forge:snapshot": "forge snapshot"
   },
   "license": "MIT",
   "dependencies": {
