@@ -137,55 +137,88 @@ interface IEASInsurance {
 
 /**
  * @title AttestationStructs
- * @dev Structs for different types of attestations
+ * @dev Gas-optimized structs for different types of attestations with packed storage
  */
 library AttestationStructs {
     
+    // Gas-optimized with packed layout
     struct PolicyAttestationData {
+        // Slot 1: Fixed-size numeric data (32 bytes)
+        uint128 premiumPaid;      // 16 bytes - sufficient for premium amounts
+        uint128 payoutValue;      // 16 bytes - sufficient for payout amounts
+        
+        // Slot 2: Addresses and small values (32 bytes)
+        address insuranceContract; // 20 bytes
+        address client;           // 20 bytes - this will use part of next slot
+        
+        // Slot 3: Timestamps and flags (32 bytes)
+        uint64 startDate;         // 8 bytes - sufficient for timestamps
+        uint64 duration;          // 8 bytes - sufficient for durations
+        bool isActive;            // 1 byte
+        // 15 bytes remaining for future use
+        
+        // Dynamic data (separate storage slots)
         string policyId;
-        address insuranceContract;
-        address client;
-        uint256 premiumPaid;
-        uint256 payoutValue;
         string cropLocation;
-        uint256 startDate;
-        uint256 duration;
-        bool isActive;
     }
     
+    // Gas-optimized weather data
     struct WeatherAttestationData {
+        // Slot 1: Fixed data (32 bytes)
+        uint64 timestamp;         // 8 bytes
+        uint64 rainfall;          // 8 bytes - sufficient for rainfall measurements (in mm * 100)
+        bytes32 oracleRequestId;  // Uses remaining 16 bytes of this slot + full next slot
+        
+        // Slot 2: Continued from above + flags
+        bool verified;            // 1 byte
+        // 23 bytes remaining
+        
+        // Dynamic data
         string location;
-        uint256 timestamp;
-        uint256 rainfall;
         string dataSource;
-        bytes32 oracleRequestId;
-        bool verified;
     }
     
+    // Gas-optimized claim data
     struct ClaimAttestationData {
+        // Slot 1: Amounts and timestamps (32 bytes)
+        uint128 claimAmount;      // 16 bytes
+        uint64 timestamp;         // 8 bytes
+        uint8 claimStatus;        // 1 byte - 0: pending, 1: approved, 2: denied, 3: paid
+        bool droughtConfirmed;    // 1 byte
+        // 6 bytes remaining
+        
+        // Dynamic data
         string policyId;
-        uint256 claimAmount;
-        uint256 timestamp;
-        uint8 claimStatus; // 0: pending, 1: approved, 2: denied, 3: paid
         string evidence;
-        bool droughtConfirmed;
     }
     
+    // Gas-optimized compliance data
     struct ComplianceAttestationData {
-        address entity;
+        // Slot 1: Address and timestamp (32 bytes)
+        address entity;           // 20 bytes
+        uint64 verificationDate;  // 8 bytes
+        bool compliant;          // 1 byte
+        // 3 bytes remaining
+        
+        // Dynamic data
         string regulationType;
-        bool compliant;
-        uint256 verificationDate;
         string certifyingAuthority;
     }
     
+    // Gas-optimized premium data
     struct PremiumAttestationData {
+        // Slot 1: Addresses (32 bytes)
+        address client;           // 20 bytes
+        address token;           // 20 bytes - this will use part of next slot
+        
+        // Slot 2: Amounts and timestamps (32 bytes)
+        uint128 amount;          // 16 bytes
+        uint64 paidAt;           // 8 bytes
+        bool paid;               // 1 byte
+        // 7 bytes remaining
+        
+        // Dynamic data
         string policyId;
-        address client;
-        uint256 amount;
-        address token;
-        bool paid;
-        uint256 paidAt;
     }
 }
 
