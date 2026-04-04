@@ -24,7 +24,7 @@ import "./eas/EASInsuranceManager.sol";
  * @title AutomatedInsuranceProvider
  * @dev Insurance provider with Chainlink Automation for automated weather monitoring
  */
-contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
+contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompatibleInterface {
     using SafeERC20 for IERC20;
     
     address public insurer;
@@ -383,7 +383,7 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         // Fund with LINK tokens for oracle requests
         LinkTokenInterface link = LinkTokenInterface(linkToken);
         uint256 linkAmount = ((_duration / DAY_IN_SECONDS) + 2) * ORACLE_PAYMENT * 2;
-        link.transfer(address(insurance), linkAmount);
+        require(link.transfer(address(insurance), linkAmount), "LINK transfer failed");
 
         // Create packed config hash for gas-efficient event emission
         bytes32 configHash = keccak256(abi.encodePacked(_paymentToken, _premium, _payoutValue));
@@ -405,6 +405,10 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
             } catch {
                 // Continue execution if EAS fails
             }
+            // Register insurance contract as oracle node so it can create weather attestations
+            try easManager.registerOracleNode(address(insurance), true) {
+            } catch {
+            }
         }
         
         return address(insurance);
@@ -413,7 +417,7 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
     /**
      * @dev Client pays premium and activates contract for automation
      */
-    function payPremium(address _contract) external payable {
+    function payPremium(address _contract) external payable nonReentrant {
         require(contracts[_contract] != AutomatedInsuranceContract(address(0)), "Contract does not exist");
         PremiumInfo storage info = premiumInfo[_contract];
         require(!info.paid, "Premium already paid");
@@ -615,8 +619,10 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         uint8 tokenDecimals = IERC20Metadata(token).decimals();
         if (tokenDecimals < 18) {
             tokenAmount = tokenAmount / 10**(18 - tokenDecimals);
+        } else if (tokenDecimals > 18) {
+            tokenAmount = tokenAmount * 10**(tokenDecimals - 18);
         }
-        
+
         return tokenAmount;
     }
     
@@ -632,6 +638,25 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
      */
     function isEASEnabled() external view returns (bool) {
         return easEnabled && address(easManager) != address(0);
+    }
+
+    bool public terminated;
+
+    function endContractProvider() external onlyOwner {
+        require(!terminated, "Already terminated");
+        terminated = true;
+
+        LinkTokenInterface link = LinkTokenInterface(linkToken);
+        uint256 linkBalance = link.balanceOf(address(this));
+        if (linkBalance > 0) {
+            require(link.transfer(msg.sender, linkBalance), "Unable to transfer LINK");
+        }
+
+        uint256 ethBalance = address(this).balance;
+        if (ethBalance > 0) {
+            (bool success, ) = payable(insurer).call{value: ethBalance}("");
+            require(success, "ETH transfer failed");
+        }
     }
 
     receive() external payable { }
@@ -947,14 +972,15 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         recordChainlinkFulfillment(_requestId) 
         onContractActive 
     {
+        require(dataRequestsSent < 2, "Unexpected extra callback");
         currentRainfallList[dataRequestsSent] = _rainfall;
-        requestCount += 1;
         dataRequestsSent += 1;
 
         emit dataReceived(_rainfall);
 
         // If we have received both data points, aggregate and evaluate
         if (dataRequestsSent >= 2) {
+            requestCount += 1;
             currentRainfall = (currentRainfallList[0] + currentRainfallList[1]) / 2;
 
             if (currentRainfall == 0) {
@@ -1022,7 +1048,7 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     /**
      * @dev End contract when duration expires
      */
-    function _endContract() internal {
+    function _endContract() internal nonReentrant {
         contractActive = false;
         
         // Notify provider to remove from automation

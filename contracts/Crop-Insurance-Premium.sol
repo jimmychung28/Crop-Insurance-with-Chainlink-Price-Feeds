@@ -91,6 +91,11 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         supportedTokens[address(0)] = true;
     }
 
+    function transferOwnership(address newOwner) public override onlyOwner {
+        super.transferOwnership(newOwner);
+        insurer = newOwner;
+    }
+
     /**
      * @dev Event to log when a contract is created
      */
@@ -201,7 +206,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         // to fulfil 1 Oracle request per day, with a small buffer added
         LinkTokenInterface link = LinkTokenInterface(i.getChainlinkToken());
         uint256 linkAmount = ((_duration / DAY_IN_SECONDS) + 2) * ORACLE_PAYMENT * 2;
-        link.transfer(address(i), linkAmount);
+        require(link.transfer(address(i), linkAmount), "LINK transfer failed");
 
         return address(i);
     }
@@ -210,7 +215,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
      * @dev Client pays premium for their insurance contract
      * @param _contract Address of the insurance contract
      */
-    function payPremium(address _contract) external payable {
+    function payPremium(address _contract) external payable nonReentrant {
         require(contracts[_contract] != InsuranceContract(address(0)), "Contract does not exist");
         PremiumInfo storage info = premiumInfo[_contract];
         require(!info.paid, "Premium already paid");
@@ -501,8 +506,10 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         uint8 tokenDecimals = IERC20Metadata(token).decimals();
         if (tokenDecimals < 18) {
             tokenAmount = tokenAmount / 10**(18 - tokenDecimals);
+        } else if (tokenDecimals > 18) {
+            tokenAmount = tokenAmount * 10**(tokenDecimals - 18);
         }
-        
+
         return tokenAmount;
     }
     
@@ -531,6 +538,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
+            } else if (tokenDecimals > 18) {
+                amount = amount / 10**(tokenDecimals - 18);
             }
             
             return (amount * uint256(price)) / 1e18;
@@ -605,9 +614,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Prevents a function being run unless the Insurance Contract duration has been reached
      */
     modifier onContractEnded() {
-        if (startDate + duration < block.timestamp) {
-          _;
-        }
+        require(startDate + duration < block.timestamp, "Contract has not expired");
+        _;
     }
 
     /**
@@ -745,9 +753,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Calls out to an Oracle to obtain weather data
      */
     function updateContract() public onContractActive() returns (bytes32 requestId)   {
-        // First call end contract in case of insurance contract duration expiring,
-        // if it hasn't then this function execution will resume
-        checkEndContract();
+        // Check if contract duration has expired
+        if (startDate + duration < block.timestamp) {
+            checkEndContract();
+            return bytes32(0);
+        }
 
         //contract may have been marked inactive above, only do request if needed
         if (contractActive) {
@@ -814,6 +824,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      */
     function checkRainfallCallBack(bytes32 _requestId, uint256 _rainfall) public recordChainlinkFulfillment(_requestId) onContractActive() callFrequencyOncePerDay()  {
         //set current rainfall data from Oracle
+        require(dataRequestsSent < 2, "Unexpected extra callback");
         currentRainfallList[dataRequestsSent] = _rainfall;
         dataRequestsSent += 1;
 
@@ -893,20 +904,24 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
             }
         } else { //insurer hasn't done the minimum number of data requests, client is eligible to receive his premium back
-            // need to use ETH/USD price feed to calculate ETH amount
             contractActive = false;
 
-            uint256 clientRefund = premium / uint256(getLatestPrice());
-            (bool s2, ) = payable(client).call{value: clientRefund}("");
-            require(s2, "ETH transfer failed");
-
-            // Return remaining balance to insurer
             if (paymentToken == address(0)) {
+                // ETH refund
+                uint256 clientRefund = premium / uint256(getLatestPrice());
+                if (clientRefund > address(this).balance) {
+                    clientRefund = address(this).balance;
+                }
+                (bool s2, ) = payable(client).call{value: clientRefund}("");
+                require(s2, "ETH transfer failed");
                 (bool s3, ) = payable(insurer).call{value: address(this).balance}("");
                 require(s3, "ETH transfer failed");
             } else {
+                // ERC20 refund — proportional token refund
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
-                IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
+                uint256 clientRefund = tokenBalance / 10;
+                IERC20(paymentToken).safeTransfer(client, clientRefund);
+                IERC20(paymentToken).safeTransfer(insurer, tokenBalance - clientRefund);
             }
         }
 
