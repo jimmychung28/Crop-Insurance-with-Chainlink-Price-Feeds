@@ -98,6 +98,11 @@ contract InsuranceProvider is Ownable {
         supportedTokens[address(0)] = true;
     }
 
+    function transferOwnership(address newOwner) public override onlyOwner {
+        super.transferOwnership(newOwner);
+        insurer = newOwner;
+    }
+
     // Using OpenZeppelin's Ownable instead of custom modifier
 
     /**
@@ -138,7 +143,10 @@ contract InsuranceProvider is Ownable {
         returns (address)
     {
         require(supportedTokens[_paymentToken], "Payment token not supported");
-        
+        require(_premium > 0, "Premium must be greater than 0");
+        require(_payoutValue > _premium, "Payout must exceed premium");
+        require(_duration > 0, "Duration must be greater than 0");
+
         // Calculate funding amount based on payment token
         uint256 fundingAmount;
         if (_paymentToken == address(0)) {
@@ -185,7 +193,7 @@ contract InsuranceProvider is Ownable {
         // to fulfil 1 Oracle request per day, with a small buffer added
         LinkTokenInterface link = LinkTokenInterface(i.getChainlinkToken());
         uint256 linkAmount = ((_duration / DAY_IN_SECONDS) + 2) * ORACLE_PAYMENT * 2;
-        link.transfer(address(i), linkAmount);
+        require(link.transfer(address(i), linkAmount), "LINK transfer failed");
 
         return address(i);
 
@@ -368,8 +376,10 @@ contract InsuranceProvider is Ownable {
         uint8 tokenDecimals = IERC20Metadata(token).decimals();
         if (tokenDecimals < 18) {
             tokenAmount = tokenAmount / 10**(18 - tokenDecimals);
+        } else if (tokenDecimals > 18) {
+            tokenAmount = tokenAmount * 10**(tokenDecimals - 18);
         }
-        
+
         return tokenAmount;
     }
     
@@ -398,6 +408,8 @@ contract InsuranceProvider is Ownable {
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
+            } else if (tokenDecimals > 18) {
+                amount = amount / 10**(tokenDecimals - 18);
             }
             
             return (amount * uint256(price)) / 1e18;
@@ -656,6 +668,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         nonReentrant()
     {
         //set current temperature to value returned from Oracle, and store date this was retrieved (to avoid spam and gaming the contract)
+       require(dataRequestsSent < 2, "Unexpected extra callback");
        currentRainfallList[dataRequestsSent] = _rainfall;
        dataRequestsSent = dataRequestsSent + 1;
 
