@@ -1089,9 +1089,11 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         } else {
             // Partial refund to client for insufficient monitoring
             if (paymentToken == address(0)) {
-                uint256 clientRefund = premium / uint256(getLatestPrice());
-                if (clientRefund > address(this).balance) {
-                    clientRefund = address(this).balance;
+                // ETH refund — proportional to premium/payoutValue ratio
+                uint256 ethBalance = address(this).balance;
+                uint256 clientRefund = (ethBalance * premium) / payoutValue;
+                if (clientRefund > ethBalance) {
+                    clientRefund = ethBalance;
                 }
                 (bool s2, ) = payable(client).call{value: clientRefund}("");
                 require(s2, "ETH transfer failed");

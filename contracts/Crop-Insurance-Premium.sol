@@ -345,7 +345,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
      * @dev Updates the contract for a given address
      * @param _contract Address of the insurance contract to update
      */
-    function updateContract(address _contract) external {
+    function updateContract(address _contract) external onlyOwner {
         InsuranceContract i = InsuranceContract(_contract);
         i.updateContract();
     }
@@ -917,10 +917,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             contractActive = false;
 
             if (paymentToken == address(0)) {
-                // ETH refund
-                uint256 clientRefund = premium / uint256(getLatestPrice());
-                if (clientRefund > address(this).balance) {
-                    clientRefund = address(this).balance;
+                // ETH refund — proportional to premium/payoutValue ratio
+                uint256 ethBalance = address(this).balance;
+                uint256 clientRefund = (ethBalance * premium) / payoutValue;
+                if (clientRefund > ethBalance) {
+                    clientRefund = ethBalance;
                 }
                 (bool s2, ) = payable(client).call{value: clientRefund}("");
                 require(s2, "ETH transfer failed");

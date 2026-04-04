@@ -213,7 +213,7 @@ contract InsuranceProvider is Ownable {
      * @dev Updates the contract for a given address
      * @param _contract Address of the insurance contract to update
      */
-    function updateContract(address _contract) external {
+    function updateContract(address _contract) external onlyOwner {
         InsuranceContract i = InsuranceContract(_contract);
         i.updateContract();
     }
@@ -776,8 +776,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             
             // Check if insurer met minimum data request requirements
             if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
-                // Insurer didn't meet requirements, client gets premium refund in ETH
-                clientRefund = premium / uint256(getLatestPrice());
+                // Insurer didn't meet requirements, client gets proportional ETH refund
+                clientRefund = (ethBalance * premium) / payoutValue;
                 if (clientRefund > ethBalance) {
                     clientRefund = ethBalance;
                 }
