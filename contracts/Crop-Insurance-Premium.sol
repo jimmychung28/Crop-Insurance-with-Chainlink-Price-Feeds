@@ -649,7 +649,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         _;
     }
 
-    event contractCreated(address _insurer, address _client, uint _duration, uint _premium, uint _totalCover);
+    event ContractCreated(address _insurer, address _client, uint _duration, uint _premium, uint _totalCover);
     event contractPaidOut(uint _paidTime, uint _totalPaid, uint _finalRainfall);
     event contractEnded(uint _endTime, uint _totalReturned);
     event contractActivated(uint256 _activatedAt);
