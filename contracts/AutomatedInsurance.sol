@@ -82,9 +82,9 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
     address public USDT;
 
     // API Keys for weather data
-    string public worldWeatherOnlineKey;
-    string public openWeatherKey;
-    string public weatherbitKey;
+    string private worldWeatherOnlineKey;
+    string private openWeatherKey;
+    string private weatherbitKey;
 
     // Gas-optimized events with packed parameters and strategic indexing
     event ContractCreated(
@@ -428,7 +428,8 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
             require(msg.value >= ethAmount, "Insufficient ETH sent for premium");
             
             if (msg.value > ethAmount) {
-                payable(msg.sender).transfer(msg.value - ethAmount);
+                (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - ethAmount}("");
+                require(refundSuccess, "ETH refund failed");
             }
         } else {
             // ERC20 payment
@@ -679,9 +680,9 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     uint256 public lastWeatherCheck = 0;
 
     // API Configuration
-    string public worldWeatherOnlineKey;
-    string public openWeatherKey;
-    string public weatherbitKey;
+    string private worldWeatherOnlineKey;
+    string private openWeatherKey;
+    string private weatherbitKey;
 
     // Events
     event contractCreated(address _insurer, address _client, uint _duration, uint _premium, uint _totalCover);
@@ -810,9 +811,7 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         _requestWeatherData();
         
         emit AutomatedWeatherCheckPerformed(block.timestamp, currentRainfall);
-        
-        // Create EAS weather attestation if EAS is enabled
-        _createWeatherAttestation(currentRainfall);
+        // Note: weather attestation is created in the oracle callback after currentRainfall is updated
     }
 
     /**
@@ -1003,7 +1002,8 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         AutomatedInsuranceProvider(insurer).deactivateContract(address(this));
         
         if (paymentToken == address(0)) {
-            payable(client).transfer(address(this).balance);
+            (bool success, ) = payable(client).call{value: address(this).balance}("");
+            require(success, "ETH transfer failed");
         } else {
             uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
             IERC20(paymentToken).safeTransfer(client, tokenBalance);
@@ -1032,7 +1032,8 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         if (requestCount >= (duration / DAY_IN_SECONDS - 1)) {
             // Return payout funds to insurer
             if (paymentToken == address(0)) {
-                payable(insurer).transfer(address(this).balance);
+                (bool s1, ) = payable(insurer).call{value: address(this).balance}("");
+                require(s1, "ETH transfer failed");
             } else {
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
@@ -1044,8 +1045,10 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
                 if (clientRefund > address(this).balance) {
                     clientRefund = address(this).balance;
                 }
-                payable(client).transfer(clientRefund);
-                payable(insurer).transfer(address(this).balance);
+                (bool s2, ) = payable(client).call{value: clientRefund}("");
+                require(s2, "ETH transfer failed");
+                (bool s3, ) = payable(insurer).call{value: address(this).balance}("");
+                require(s3, "ETH transfer failed");
             } else {
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
                 uint256 clientRefund = tokenBalance / 10;

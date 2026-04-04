@@ -57,9 +57,9 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
     address public USDT;
 
     // API Keys for weather data
-    string public worldWeatherOnlineKey;
-    string public openWeatherKey;
-    string public weatherbitKey;
+    string private worldWeatherOnlineKey;
+    string private openWeatherKey;
+    string private weatherbitKey;
 
     constructor(
         string memory _worldWeatherKey,
@@ -226,7 +226,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
             
             // Refund excess ETH if any
             if (msg.value > ethAmount) {
-                payable(msg.sender).transfer(msg.value - ethAmount);
+                (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - ethAmount}("");
+                require(refundSuccess, "ETH refund failed");
             }
         } else {
             // ERC20 payment
@@ -261,7 +262,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         if (info.token == address(0)) {
             // ETH refund
             refundAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
-            payable(insurance.client()).transfer(refundAmount);
+            (bool success, ) = payable(insurance.client()).call{value: refundAmount}("");
+            require(success, "ETH transfer failed");
         } else {
             // ERC20 refund
             refundAmount = getTokenAmountForUSD(info.token, info.amount);
@@ -288,7 +290,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         if (info.token == address(0)) {
             // ETH claim
             claimAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
-            payable(insurer).transfer(claimAmount);
+            (bool success, ) = payable(insurer).call{value: claimAmount}("");
+            require(success, "ETH transfer failed");
         } else {
             // ERC20 claim
             claimAmount = getTokenAmountForUSD(info.token, info.amount);
@@ -406,7 +409,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
 
         uint256 ethBalance = address(this).balance;
         if (ethBalance > 0) {
-            payable(insurer).transfer(ethBalance);
+            (bool success, ) = payable(insurer).call{value: ethBalance}("");
+            require(success, "ETH transfer failed");
         }
     }
 
@@ -565,16 +569,16 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     address[2] public oracles;
 
     // API Configuration - keys set during deployment
-    string public worldWeatherOnlineUrl;
-    string public worldWeatherOnlineKey;
+    string private worldWeatherOnlineUrl;
+    string private worldWeatherOnlineKey;
     string public constant WORLD_WEATHER_ONLINE_PATH = "data.current_condition.0.precipMM";
 
-    string public openWeatherUrl;
-    string public openWeatherKey;
+    string private openWeatherUrl;
+    string private openWeatherKey;
     string public constant OPEN_WEATHER_PATH = "rain.1h";
 
-    string public weatherbitUrl;
-    string public weatherbitKey;
+    string private weatherbitUrl;
+    string private weatherbitKey;
     string public constant WEATHERBIT_PATH = "data.0.precip";
 
     uint256 public daysWithoutRain; // How many days there has been with 0 rain
@@ -853,7 +857,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         
         if (paymentToken == address(0)) {
             // ETH payout
-            payable(client).transfer(address(this).balance);
+            (bool success, ) = payable(client).call{value: address(this).balance}("");
+            require(success, "ETH transfer failed");
         } else {
             // ERC20 token payout
             uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
@@ -880,7 +885,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             
             if (paymentToken == address(0)) {
                 // Return ETH
-                payable(insurer).transfer(address(this).balance);
+                (bool s1, ) = payable(insurer).call{value: address(this).balance}("");
+                require(s1, "ETH transfer failed");
             } else {
                 // Return ERC20 tokens
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
@@ -889,13 +895,15 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         } else { //insurer hasn't done the minimum number of data requests, client is eligible to receive his premium back
             // need to use ETH/USD price feed to calculate ETH amount
             contractActive = false;
-            
+
             uint256 clientRefund = premium / uint256(getLatestPrice());
-            payable(client).transfer(clientRefund);
-            
+            (bool s2, ) = payable(client).call{value: clientRefund}("");
+            require(s2, "ETH transfer failed");
+
             // Return remaining balance to insurer
             if (paymentToken == address(0)) {
-                payable(insurer).transfer(address(this).balance);
+                (bool s3, ) = payable(insurer).call{value: address(this).balance}("");
+                require(s3, "ETH transfer failed");
             } else {
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
