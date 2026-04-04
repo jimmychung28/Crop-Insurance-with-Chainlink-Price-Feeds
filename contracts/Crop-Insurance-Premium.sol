@@ -40,7 +40,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
     mapping(address => PremiumInfo) public premiumInfo;
     
     struct PremiumInfo {
-        uint256 amount;
+        uint256 amount;      // USD amount (8 decimals)
+        uint256 amountPaid;  // Actual ETH/token amount paid (for exact refund/claim)
         address token;
         bool paid;
         uint256 paidAt;
@@ -149,6 +150,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
     {
         require(supportedTokens[_paymentToken], "Payment token not supported");
         require(_premium > 0, "Premium must be greater than 0");
+        require(_payoutValue > _premium, "Payout must exceed premium");
+        require(_duration > 0, "Duration must be greater than 0");
         require(_client != address(0), "Invalid client address");
         
         // Calculate funding amount based on payment token
@@ -228,7 +231,8 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
             // ETH payment
             uint256 ethAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
             require(msg.value >= ethAmount, "Insufficient ETH sent for premium");
-            
+            info.amountPaid = ethAmount;
+
             // Refund excess ETH if any
             if (msg.value > ethAmount) {
                 (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - ethAmount}("");
@@ -238,8 +242,9 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
             // ERC20 payment
             uint256 tokenAmount = getTokenAmountForUSD(info.token, info.amount);
             IERC20(info.token).safeTransferFrom(msg.sender, address(this), tokenAmount);
+            info.amountPaid = tokenAmount;
         }
-        
+
         info.paid = true;
         info.paidAt = block.timestamp;
         
@@ -263,15 +268,12 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         require(!insurance.isActive() || insurance.getRequestCount() == 0, "Contract is active and monitored, cannot refund");
         require(insurance.client() == msg.sender || msg.sender == owner(), "Unauthorized");
         
-        uint256 refundAmount;
+        // Refund exact amount that was paid (prevents price arbitrage)
+        uint256 refundAmount = info.amountPaid;
         if (info.token == address(0)) {
-            // ETH refund
-            refundAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
             (bool success, ) = payable(insurance.client()).call{value: refundAmount}("");
             require(success, "ETH transfer failed");
         } else {
-            // ERC20 refund
-            refundAmount = getTokenAmountForUSD(info.token, info.amount);
             IERC20(info.token).safeTransfer(insurance.client(), refundAmount);
         }
         
@@ -291,15 +293,12 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         InsuranceContract insurance = InsuranceContract(_contract);
         require(!insurance.isActive() || insurance.contractEnded(), "Contract still active");
         
-        uint256 claimAmount;
+        // Claim exact amount that was paid (prevents price arbitrage)
+        uint256 claimAmount = info.amountPaid;
         if (info.token == address(0)) {
-            // ETH claim
-            claimAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
             (bool success, ) = payable(insurer).call{value: claimAmount}("");
             require(success, "ETH transfer failed");
         } else {
-            // ERC20 claim
-            claimAmount = getTokenAmountForUSD(info.token, info.amount);
             IERC20(info.token).safeTransfer(insurer, claimAmount);
         }
         
@@ -419,6 +418,12 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         }
     }
 
+    function recoverERC20(address token) external onlyOwner {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        require(balance > 0, "No tokens to recover");
+        IERC20(token).safeTransfer(insurer, balance);
+    }
+
     /**
      * @dev Returns the latest ETH/USD price from Chainlink oracle
      * @return Latest price with 8 decimal places
@@ -494,10 +499,12 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
         require(address(priceFeed) != address(0), "Price feed not set");
         
-        (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+        (uint80 roundID, int256 price, , uint256 timeStamp, uint80 answeredInRound) = priceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
         require(price > 0, "Invalid price");
-        
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
+
         // Calculate token amount needed
         // USD amount has 8 decimals, price has 8 decimals
         uint256 tokenAmount = (usdAmount * 1e18) / uint256(price);
@@ -531,10 +538,11 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
             AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
             require(address(priceFeed) != address(0), "Price feed not set");
             
-            (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+            (uint80 roundID, int256 price, , uint256 timeStamp, uint80 answeredInRound) = priceFeed.latestRoundData();
             require(timeStamp > 0, "Round not complete");
-            
-            // Adjust for token decimals (assuming most stablecoins use 6 decimals)
+            require(price > 0, "Invalid price");
+            require(answeredInRound >= roundID, "Stale price data");
+            require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
@@ -752,7 +760,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
    /**
      * @dev Calls out to an Oracle to obtain weather data
      */
-    function updateContract() public onContractActive() returns (bytes32 requestId)   {
+    function updateContract() public onlyOwner() onContractActive() returns (bytes32 requestId)   {
         // Check if contract duration has expired
         if (startDate + duration < block.timestamp) {
             checkEndContract();
@@ -917,9 +925,9 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
                 (bool s3, ) = payable(insurer).call{value: address(this).balance}("");
                 require(s3, "ETH transfer failed");
             } else {
-                // ERC20 refund — proportional token refund
+                // ERC20 refund proportional to premium/payoutValue ratio
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
-                uint256 clientRefund = tokenBalance / 10;
+                uint256 clientRefund = (tokenBalance * premium) / payoutValue;
                 IERC20(paymentToken).safeTransfer(client, clientRefund);
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance - clientRefund);
             }

@@ -72,6 +72,9 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
     bool public automationEnabled = true;
     uint64 public upkeepBatchCounter; // Gas-optimized counter for batch tracking
     
+    // Chainlink Automation forwarder (restrict performUpkeep caller)
+    address public automationForwarder;
+
     // Supported payment tokens
     mapping(address => bool) public supportedTokens;
     mapping(address => AggregatorV3Interface) public tokenPriceFeeds;
@@ -218,7 +221,15 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
      * @dev Chainlink Automation performUpkeep function
      * Performs automated weather monitoring for batch of contracts with gas optimization
      */
+    function setAutomationForwarder(address _forwarder) external onlyOwner {
+        automationForwarder = _forwarder;
+    }
+
     function performUpkeep(bytes calldata performData) external override {
+        require(
+            automationForwarder == address(0) || msg.sender == automationForwarder || msg.sender == owner(),
+            "Only automation forwarder or owner"
+        );
         uint256 gasStart = gasleft();
         
         // Decode the batch of contracts to process
@@ -333,6 +344,8 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
     {
         require(supportedTokens[_paymentToken], "Payment token not supported");
         require(_premium > 0, "Premium must be greater than 0");
+        require(_payoutValue > _premium, "Payout must exceed premium");
+        require(_duration > 0, "Duration must be greater than 0");
         require(_client != address(0), "Invalid client address");
         
         // Calculate funding amount based on payment token
@@ -582,6 +595,12 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         return price;
     }
 
+    function recoverERC20(address token) external onlyOwner {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        require(balance > 0, "No tokens to recover");
+        IERC20(token).safeTransfer(insurer, balance);
+    }
+
     function addSupportedToken(address token, address priceFeed) external onlyOwner {
         require(priceFeed != address(0), "Invalid price feed");
         supportedTokens[token] = true;
@@ -610,10 +629,12 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
         require(address(priceFeed) != address(0), "Price feed not set");
         
-        (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+        (uint80 roundID, int256 price, , uint256 timeStamp, uint80 answeredInRound) = priceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
         require(price > 0, "Invalid price");
-        
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
+
         uint256 tokenAmount = (usdAmount * 1e18) / uint256(price);
         
         uint8 tokenDecimals = IERC20Metadata(token).decimals();
@@ -1077,7 +1098,7 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
                 require(s3, "ETH transfer failed");
             } else {
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
-                uint256 clientRefund = tokenBalance / 10;
+                uint256 clientRefund = (tokenBalance * premium) / payoutValue;
                 IERC20(paymentToken).safeTransfer(client, clientRefund);
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance - clientRefund);
             }

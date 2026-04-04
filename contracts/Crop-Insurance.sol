@@ -289,6 +289,12 @@ contract InsuranceProvider is Ownable {
         }
     }
 
+    function recoverERC20(address token) external onlyOwner {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        require(balance > 0, "No tokens to recover");
+        IERC20(token).safeTransfer(insurer, balance);
+    }
+
     /**
      * @dev Returns the latest ETH/USD price from Chainlink oracle
      * @return Latest price with 8 decimal places
@@ -364,12 +370,12 @@ contract InsuranceProvider is Ownable {
         AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
         require(address(priceFeed) != address(0), "Price feed not set");
         
-        (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+        (uint80 roundID, int256 price, , uint256 timeStamp, uint80 answeredInRound) = priceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
         require(price > 0, "Invalid price");
-        
-        // Calculate token amount needed
-        // USD amount has 8 decimals, price has 8 decimals
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
+
         uint256 tokenAmount = (usdAmount * 1e18) / uint256(price);
         
         // Adjust for token decimals
@@ -401,10 +407,13 @@ contract InsuranceProvider is Ownable {
             AggregatorV3Interface priceFeed = tokenPriceFeeds[token];
             require(address(priceFeed) != address(0), "Price feed not set");
             
-            (, int256 price, , uint256 timeStamp, ) = priceFeed.latestRoundData();
+            (uint80 roundID, int256 price, , uint256 timeStamp, uint80 answeredInRound) = priceFeed.latestRoundData();
             require(timeStamp > 0, "Round not complete");
-            
-            // Adjust for token decimals (assuming most stablecoins use 6 decimals)
+            require(price > 0, "Invalid price");
+            require(answeredInRound >= roundID, "Stale price data");
+            require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
+
+            uint8 tokenDecimals = IERC20Metadata(token).decimals();
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
@@ -587,7 +596,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
    /**
      * @dev Calls out to an Oracle to obtain weather data
      */
-    function updateContract() public onContractActive() returns (bytes32 requestId)   {
+    function updateContract() public onlyOwner() onContractActive() returns (bytes32 requestId)   {
         // Check if contract duration has expired
         if (startDate + duration < block.timestamp) {
             checkEndContract();
@@ -794,10 +803,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             
             // Check if insurer met minimum data request requirements
             if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
-                // Calculate client refund in tokens - use a simplified approach
-                // For now, refund a proportional amount of the token balance based on premium ratio
-                // This is a simplified calculation; in production, you might want more sophisticated logic
-                clientRefund = tokenBalance / 10; // Refund 10% as basic premium refund
+                // Refund proportional to premium/payoutValue ratio
+                clientRefund = (tokenBalance * premium) / payoutValue;
                 if (clientRefund > tokenBalance) {
                     clientRefund = tokenBalance;
                 }
