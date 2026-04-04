@@ -40,10 +40,16 @@ contract InsuranceProvider is Ownable {
 
     // How many seconds in a day. 60 for testing, 86400 for Production
     uint256 public constant DAY_IN_SECONDS = 60;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
 
     uint256 private constant ORACLE_PAYMENT = 0.1 * 10**18; // 0.1 LINK
-    // Address of LINK token on Kovan
-    address public constant LINK_KOVAN = 0xa36085F69e2889c224210F603D836748e7dC0088;
+    address public immutable linkToken;
+
+    // Oracle configuration
+    address public oracle1;
+    address public oracle2;
+    bytes32 public jobId1;
+    bytes32 public jobId2;
 
     // Here is where all the insurance contracts are stored.
     mapping(address => InsuranceContract) public contracts;
@@ -65,14 +71,29 @@ contract InsuranceProvider is Ownable {
     constructor(
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _linkToken,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
+        require(_linkToken != address(0), "Invalid LINK address");
+        require(_priceFeed != address(0), "Invalid price feed address");
+        require(_oracle1 != _oracle2, "Oracles must be different");
+
         insurer = msg.sender;
-        ethUsdPriceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        linkToken = _linkToken;
+        ethUsdPriceFeed = AggregatorV3Interface(_priceFeed);
         worldWeatherOnlineKey = _worldWeatherKey;
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
-        
+        oracle1 = _oracle1;
+        oracle2 = _oracle2;
+        jobId1 = _jobId1;
+        jobId2 = _jobId2;
+
         // ETH is always supported
         supportedTokens[address(0)] = true;
     }
@@ -136,11 +157,16 @@ contract InsuranceProvider is Ownable {
             _payoutValue,
             _cropLocation,
             _paymentToken,
-            LINK_KOVAN,
+            linkToken,
             ORACLE_PAYMENT,
             worldWeatherOnlineKey,
             openWeatherKey,
-            weatherbitKey
+            weatherbitKey,
+            address(ethUsdPriceFeed),
+            oracle1,
+            oracle2,
+            jobId1,
+            jobId2
         );
 
         contracts[address(i)] = i; // Store insurance contract in contracts Map
@@ -236,13 +262,22 @@ contract InsuranceProvider is Ownable {
      * @dev Function to end provider contract, in case of bugs or needing to update logic etc,
      * funds are returned to insurance provider, including any remaining LINK tokens
      */
-    function endContractProvider() external payable onlyOwner() {
-        LinkTokenInterface link = LinkTokenInterface(LINK_KOVAN);
-        require(
-            link.transfer(msg.sender, link.balanceOf(address(this))),
-            "Unable to transfer"
-        );
-        selfdestruct(payable(insurer));
+    bool public terminated;
+
+    function endContractProvider() external onlyOwner() {
+        require(!terminated, "Already terminated");
+        terminated = true;
+
+        LinkTokenInterface link = LinkTokenInterface(linkToken);
+        uint256 linkBalance = link.balanceOf(address(this));
+        if (linkBalance > 0) {
+            require(link.transfer(msg.sender, linkBalance), "Unable to transfer LINK");
+        }
+
+        uint256 ethBalance = address(this).balance;
+        if (ethBalance > 0) {
+            payable(insurer).transfer(ethBalance);
+        }
     }
 
     /**
@@ -253,12 +288,14 @@ contract InsuranceProvider is Ownable {
         (
             uint80 roundID,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 timeStamp,
             uint80 answeredInRound
         ) = ethUsdPriceFeed.latestRoundData();
-        // If the round is not complete yet, timestamp is 0
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 
@@ -433,9 +470,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Prevents a function being run unless the Insurance Contract duration has been reached
      */
     modifier onContractEnded() {
-        if (startDate + duration < block.timestamp) {
-          _;
-        }
+        require(startDate + duration < block.timestamp, "Contract has not expired");
+        _;
     }
 
     /**
@@ -479,11 +515,17 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         uint256 _oraclePaymentAmount,
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
+        require(_oracle1 != _oracle2, "Oracles must be different");
 
         //set ETH/USD Price Feed
-        priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        priceFeed = AggregatorV3Interface(_priceFeed);
 
         //initialize variables required for Chainlink Network interaction
         setChainlinkToken(_link);
@@ -514,17 +556,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         weatherbitUrl = "https://api.weatherbit.io/v2.0/current?";
         weatherbitKey = _weatherbitKey;
 
-        //set the oracles and jodids to values from nodes on market.link
-        //oracles[0] = 0x240bae5a27233fd3ac5440b5a598467725f7d1cd;
-        //oracles[1] = 0x5b4247e58fe5a54a116e4a3be32b31be7030c8a3;
-        //jobIds[0] = "1bc4f827ff5942eaaa7540b7dd1e20b9";
-        //jobIds[1] = "e67ddf1f394d44e79a9a2132efd00050";
-
-        //or if you have your own node and job setup you can use it for both requests
-        oracles[0] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        oracles[1] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        jobIds[0] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
-        jobIds[1] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
+        //set the oracles and jobIds from constructor parameters
+        oracles[0] = _oracle1;
+        oracles[1] = _oracle2;
+        jobIds[0] = _jobId1;
+        jobIds[1] = _jobId2;
 
         emit ContractCreated(
             insurer,
@@ -539,9 +575,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Calls out to an Oracle to obtain weather data
      */
     function updateContract() public onContractActive() returns (bytes32 requestId)   {
-        // First call end contract in case of insurance contract duration expiring,
-        // if it hasn't then this function execution will resume
-        checkEndContract();
+        // Check if contract duration has expired
+        if (startDate + duration < block.timestamp) {
+            checkEndContract();
+            return bytes32(0);
+        }
 
         //contract may have been marked inactive above, only do request if needed
         if (contractActive) {
@@ -650,7 +688,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Insurance conditions have been met, do payout of total cover amount to client
      * @dev Protected against reentrancy attacks using nonReentrant modifier and CEI pattern
      */
-    function payOutContract() private onContractActive() nonReentrant() {
+    function payOutContract() private onContractActive() {
         // CHECKS: Ensure contract is in valid state for payout
         require(contractActive == true, "Contract must be active");
         require(contractPaid == false, "Contract already paid out");
@@ -690,7 +728,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @dev Insurance conditions have not been met, and contract expired, end contract and return funds
      * @dev Protected against reentrancy attacks using nonReentrant modifier and CEI pattern
      */
-    function checkEndContract() private onContractEnded() nonReentrant() {
+    function checkEndContract() private onContractEnded() {
         // CHECKS: Ensure contract can be ended
         require(contractActive == true, "Contract already ended");
         require(startDate + duration < block.timestamp, "Contract has not expired yet");
@@ -772,12 +810,14 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         (
             uint80 roundID,
             int price,
-            uint startedAt,
+            ,
             uint timeStamp,
             uint80 answeredInRound
-        ) = ethUsdPriceFeed.latestRoundData();
-        // If the round is not complete yet, timestamp is 0
+        ) = priceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 
@@ -897,28 +937,6 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         }
     }
 
-
-    /**
-     * @dev Helper function for converting uint to a string
-     */
-    function uint2str(uint256 _i) internal pure returns (string memory _uintAsString) {
-        if (_i == 0) {
-            return "0";
-        }
-        uint j = _i;
-        uint len;
-        while (j != 0) {
-            len++;
-            j /= 10;
-        }
-        bytes memory bstr = new bytes(len);
-        uint k = len - 1;
-        while (_i != 0) {
-            bstr[k--] = bytes1(uint8(48 + _i % 10));
-            _i /= 10;
-        }
-        return string(bstr);
-    }
 
     /**
      * @dev Fallback function so contract can receive ether when required

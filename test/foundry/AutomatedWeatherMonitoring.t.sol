@@ -54,7 +54,13 @@ contract AutomatedWeatherMonitoringTest is TestHelper {
         provider = new AutomatedInsuranceProvider(
             TEST_WORLD_WEATHER_KEY,
             TEST_OPEN_WEATHER_KEY,
-            TEST_WEATHERBIT_KEY
+            TEST_WEATHERBIT_KEY,
+            LINK_TOKEN,
+            ETH_USD_PRICE_FEED,
+            ORACLE_1,
+            ORACLE_2,
+            JOB_ID_1,
+            JOB_ID_2
         );
         
         // Setup supported tokens
@@ -725,7 +731,13 @@ contract AutomationGasOptimizationTest is TestHelper {
         provider = new AutomatedInsuranceProvider(
             TEST_WORLD_WEATHER_KEY,
             TEST_OPEN_WEATHER_KEY,
-            TEST_WEATHERBIT_KEY
+            TEST_WEATHERBIT_KEY,
+            LINK_TOKEN,
+            ETH_USD_PRICE_FEED,
+            ORACLE_1,
+            ORACLE_2,
+            JOB_ID_1,
+            JOB_ID_2
         );
         vm.stopPrank();
         
@@ -765,7 +777,13 @@ contract AutomationGasOptimizationTest is TestHelper {
         AutomatedInsuranceProvider singleProvider = new AutomatedInsuranceProvider(
             TEST_WORLD_WEATHER_KEY,
             TEST_OPEN_WEATHER_KEY,
-            TEST_WEATHERBIT_KEY
+            TEST_WEATHERBIT_KEY,
+            LINK_TOKEN,
+            ETH_USD_PRICE_FEED,
+            ORACLE_1,
+            ORACLE_2,
+            JOB_ID_1,
+            JOB_ID_2
         );
         
         vm.startPrank(OWNER);

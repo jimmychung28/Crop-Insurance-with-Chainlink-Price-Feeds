@@ -12,7 +12,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract InsuranceProvider is Ownable {
+contract InsuranceProvider is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     
     // Built-in overflow protection in Solidity 0.8+, no SafeMath needed
@@ -21,11 +21,17 @@ contract InsuranceProvider is Ownable {
 
     // How many seconds in a day. 60 for testing, 86400 for Production
     uint256 public constant DAY_IN_SECONDS = 60;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private constant ORACLE_PAYMENT = 0.1 * 10**18; // 0.1 LINK
     uint256 public constant PREMIUM_GRACE_PERIOD = 1 days; // Grace period for premium payment
-    
-    // Address of LINK token on Kovan
-    address public constant LINK_KOVAN = 0xa36085F69e2889c224210F603D836748e7dC0088;
+
+    address public immutable linkToken;
+
+    // Oracle configuration
+    address public oracle1;
+    address public oracle2;
+    bytes32 public jobId1;
+    bytes32 public jobId2;
 
     // Here is where all the insurance contracts are stored.
     mapping(address => InsuranceContract) public contracts;
@@ -58,14 +64,29 @@ contract InsuranceProvider is Ownable {
     constructor(
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _linkToken,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
+        require(_linkToken != address(0), "Invalid LINK address");
+        require(_priceFeed != address(0), "Invalid price feed address");
+        require(_oracle1 != _oracle2, "Oracles must be different");
+
         insurer = msg.sender;
-        ethUsdPriceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        linkToken = _linkToken;
+        ethUsdPriceFeed = AggregatorV3Interface(_priceFeed);
         worldWeatherOnlineKey = _worldWeatherKey;
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
-        
+        oracle1 = _oracle1;
+        oracle2 = _oracle2;
+        jobId1 = _jobId1;
+        jobId2 = _jobId2;
+
         // ETH is always supported
         supportedTokens[address(0)] = true;
     }
@@ -143,11 +164,16 @@ contract InsuranceProvider is Ownable {
             _payoutValue,
             _cropLocation,
             _paymentToken,
-            LINK_KOVAN,
+            linkToken,
             ORACLE_PAYMENT,
             worldWeatherOnlineKey,
             openWeatherKey,
-            weatherbitKey
+            weatherbitKey,
+            address(ethUsdPriceFeed),
+            oracle1,
+            oracle2,
+            jobId1,
+            jobId2
         );
 
         contracts[address(i)] = i;
@@ -228,7 +254,7 @@ contract InsuranceProvider is Ownable {
         require(block.timestamp > info.createdAt + PREMIUM_GRACE_PERIOD, "Grace period not expired");
         
         InsuranceContract insurance = InsuranceContract(_contract);
-        require(!insurance.isActive(), "Contract is active, cannot refund");
+        require(!insurance.isActive() || insurance.getRequestCount() == 0, "Contract is active and monitored, cannot refund");
         require(insurance.client() == msg.sender || msg.sender == owner(), "Unauthorized");
         
         uint256 refundAmount;
@@ -366,13 +392,22 @@ contract InsuranceProvider is Ownable {
      * @dev Function to end provider contract, in case of bugs or needing to update logic etc,
      * funds are returned to insurance provider, including any remaining LINK tokens
      */
-    function endContractProvider() external payable onlyOwner() {
-        LinkTokenInterface link = LinkTokenInterface(LINK_KOVAN);
-        require(
-            link.transfer(msg.sender, link.balanceOf(address(this))),
-            "Unable to transfer"
-        );
-        selfdestruct(payable(insurer));
+    bool public terminated;
+
+    function endContractProvider() external onlyOwner() {
+        require(!terminated, "Already terminated");
+        terminated = true;
+
+        LinkTokenInterface link = LinkTokenInterface(linkToken);
+        uint256 linkBalance = link.balanceOf(address(this));
+        if (linkBalance > 0) {
+            require(link.transfer(msg.sender, linkBalance), "Unable to transfer LINK");
+        }
+
+        uint256 ethBalance = address(this).balance;
+        if (ethBalance > 0) {
+            payable(insurer).transfer(ethBalance);
+        }
     }
 
     /**
@@ -383,12 +418,14 @@ contract InsuranceProvider is Ownable {
         (
             uint80 roundID,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 timeStamp,
             uint80 answeredInRound
         ) = ethUsdPriceFeed.latestRoundData();
-        // If the round is not complete yet, timestamp is 0
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 
@@ -612,11 +649,17 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         uint256 _oraclePaymentAmount,
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
+        require(_oracle1 != _oracle2, "Oracles must be different");
 
         //set ETH/USD Price Feed
-        priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        priceFeed = AggregatorV3Interface(_priceFeed);
 
         //initialize variables required for Chainlink Network interaction
         setChainlinkToken(_link);
@@ -647,11 +690,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         weatherbitUrl = "https://api.weatherbit.io/v2.0/current?";
         weatherbitKey = _weatherbitKey;
 
-        //set the oracles and jodids to values from nodes on market.link
-        oracles[0] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        oracles[1] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        jobIds[0] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
-        jobIds[1] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
+        //set the oracles and jobIds from constructor parameters
+        oracles[0] = _oracle1;
+        oracles[1] = _oracle2;
+        jobIds[0] = _jobId1;
+        jobIds[1] = _jobId2;
 
         emit ContractCreated(
             insurer,
@@ -766,10 +809,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
      * @param _rainfall The rainfall amount returned
      */
     function checkRainfallCallBack(bytes32 _requestId, uint256 _rainfall) public recordChainlinkFulfillment(_requestId) onContractActive() callFrequencyOncePerDay()  {
-        //set current temperature to value returned from Oracle, and store date this was retrieved (to avoid spam and gaming the contract)
+        //set current rainfall data from Oracle
         currentRainfallList[dataRequestsSent] = _rainfall;
-        currentRainfallDateChecked = block.timestamp;
-        requestCount += 1;
         dataRequestsSent += 1;
 
         //emits that data was received
@@ -777,6 +818,9 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
 
         //if we have received both data points, we can aggregate and then evaluate whether to pay out or not
         if (dataRequestsSent > 1) {
+            currentRainfallDateChecked = block.timestamp;
+            requestCount += 1;
+
             //aggregate the data points
             currentRainfall = (currentRainfallList[0] + currentRainfallList[1]) / 2;
 
@@ -812,7 +856,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             payable(client).transfer(address(this).balance);
         } else {
             // ERC20 token payout
-            uint256 tokenBalance = IERC20(paymentToken).balance(address(this));
+            uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
             IERC20(paymentToken).safeTransfer(client, tokenBalance);
         }
 
@@ -839,7 +883,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
                 payable(insurer).transfer(address(this).balance);
             } else {
                 // Return ERC20 tokens
-                uint256 tokenBalance = IERC20(paymentToken).balance(address(this));
+                uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
             }
         } else { //insurer hasn't done the minimum number of data requests, client is eligible to receive his premium back
@@ -853,7 +897,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             if (paymentToken == address(0)) {
                 payable(insurer).transfer(address(this).balance);
             } else {
-                uint256 tokenBalance = IERC20(paymentToken).balance(address(this));
+                uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
                 IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
             }
         }
@@ -993,12 +1037,14 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
         (
             uint80 roundID,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 timeStamp,
             uint80 answeredInRound
         ) = priceFeed.latestRoundData();
-        // If the round is not complete yet, timestamp is 0
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 

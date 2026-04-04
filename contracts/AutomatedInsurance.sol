@@ -14,6 +14,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 // EAS imports
 import "./eas/interfaces/IEASInsurance.sol";
@@ -35,11 +36,18 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
 
     // Constants
     uint256 public constant DAY_IN_SECONDS = 86400; // Production: 86400, Testing: 60
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private constant ORACLE_PAYMENT = 0.1 * 10**18; // 0.1 LINK
     uint256 public constant PREMIUM_GRACE_PERIOD = 1 days;
     uint256 public constant MAX_CONTRACTS_PER_BATCH = 10; // Gas optimization
-    
-    address public constant LINK_TOKEN = 0xa36085F69e2889c224210F603D836748e7dC0088;
+
+    address public immutable linkToken;
+
+    // Oracle configuration
+    address public oracle1;
+    address public oracle2;
+    bytes32 public jobId1;
+    bytes32 public jobId2;
 
     // Contract storage
     mapping(address => AutomatedInsuranceContract) public contracts;
@@ -126,14 +134,29 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
     constructor(
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _linkToken,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
+        require(_linkToken != address(0), "Invalid LINK address");
+        require(_priceFeed != address(0), "Invalid price feed address");
+        require(_oracle1 != _oracle2, "Oracles must be different");
+
         insurer = msg.sender;
-        ethUsdPriceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        linkToken = _linkToken;
+        ethUsdPriceFeed = AggregatorV3Interface(_priceFeed);
         worldWeatherOnlineKey = _worldWeatherKey;
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
-        
+        oracle1 = _oracle1;
+        oracle2 = _oracle2;
+        jobId1 = _jobId1;
+        jobId2 = _jobId2;
+
         // ETH is always supported
         supportedTokens[address(0)] = true;
         lastUpkeepTimestamp = block.timestamp;
@@ -234,28 +257,28 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         uint256 batchLength = contractBatch.length;
         
         // Pre-filter active contracts to avoid redundant checks
-        address[] memory activeContracts = new address[](batchLength);
+        address[] memory filteredContracts = new address[](batchLength);
         uint256 activeCount = 0;
-        
+
         // Gas-efficient pre-filtering loop
         for (uint256 i = 0; i < batchLength;) {
             address contractAddr = contractBatch[i];
-            
+
             // Use static call for gas efficiency in checking status
             if (_isContractReadyForUpdate(contractAddr)) {
-                activeContracts[activeCount] = contractAddr;
+                filteredContracts[activeCount] = contractAddr;
                 unchecked { ++activeCount; }
             }
-            
+
             unchecked { ++i; }
         }
-        
+
         // Process filtered contracts with gas monitoring
         for (uint256 i = 0; i < activeCount && contractsProcessed < MAX_CONTRACTS_PER_BATCH;) {
             // Check remaining gas before processing
             if (gasleft() < gasLimit / (activeCount - i)) break;
-            
-            address contractAddr = activeContracts[i];
+
+            address contractAddr = filteredContracts[i];
             
             // Use try-catch with minimal gas for error handling
             try AutomatedInsuranceContract(contractAddr).performAutomatedWeatherCheck() {
@@ -328,22 +351,27 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
             _payoutValue,
             _cropLocation,
             _paymentToken,
-            LINK_TOKEN,
+            linkToken,
             ORACLE_PAYMENT,
             worldWeatherOnlineKey,
             openWeatherKey,
-            weatherbitKey
+            weatherbitKey,
+            address(ethUsdPriceFeed),
+            oracle1,
+            oracle2,
+            jobId1,
+            jobId2
         );
 
         contracts[address(insurance)] = insurance;
         
         // Store premium information
         premiumInfo[address(insurance)] = PremiumInfo({
-            amount: _premium,
+            amount: uint128(_premium),
             token: _paymentToken,
             paid: false,
             paidAt: 0,
-            createdAt: block.timestamp
+            createdAt: uint64(block.timestamp)
         });
         
         // Handle token transfers for payouts
@@ -353,7 +381,7 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         }
 
         // Fund with LINK tokens for oracle requests
-        LinkTokenInterface link = LinkTokenInterface(LINK_TOKEN);
+        LinkTokenInterface link = LinkTokenInterface(linkToken);
         uint256 linkAmount = ((_duration / DAY_IN_SECONDS) + 2) * ORACLE_PAYMENT * 2;
         link.transfer(address(insurance), linkAmount);
 
@@ -409,7 +437,7 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         }
         
         info.paid = true;
-        info.paidAt = block.timestamp;
+        info.paidAt = uint64(block.timestamp);
         
         // Activate contract and add to automation queue
         insurance.activateContract();
@@ -538,11 +566,14 @@ contract AutomatedInsuranceProvider is Ownable, AutomationCompatibleInterface {
         (
             uint80 roundID,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 timeStamp,
             uint80 answeredInRound
         ) = ethUsdPriceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 
@@ -661,6 +692,8 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     event RainfallThresholdReset(uint256 rainfall);
     event dataRequestSent(bytes32 requestId);
     event dataReceived(uint _rainfall);
+    event WeatherAttestationCreated(bytes32 indexed uid, uint256 rainfall);
+    event ClaimAttestationCreated(bytes32 indexed uid, uint256 claimAmount);
 
     modifier onlyInsurer() {
         require(insurer == msg.sender, "Only insurer can do this");
@@ -684,9 +717,16 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         uint256 _oraclePaymentAmount,
         string memory _worldWeatherKey,
         string memory _openWeatherKey,
-        string memory _weatherbitKey
+        string memory _weatherbitKey,
+        address _priceFeed,
+        address _oracle1,
+        address _oracle2,
+        bytes32 _jobId1,
+        bytes32 _jobId2
     ) {
-        priceFeed = AggregatorV3Interface(0x9326BFA02ADD2366b30bacB125260Af641031331);
+        require(_oracle1 != _oracle2, "Oracles must be different");
+
+        priceFeed = AggregatorV3Interface(_priceFeed);
         setChainlinkToken(_link);
         oraclePaymentAmount = _oraclePaymentAmount;
 
@@ -710,11 +750,11 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         openWeatherKey = _openWeatherKey;
         weatherbitKey = _weatherbitKey;
 
-        // Oracle configuration
-        oracles[0] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        oracles[1] = 0x05c8fadf1798437c143683e665800d58a42b6e19;
-        jobIds[0] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
-        jobIds[1] = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
+        // Oracle configuration from constructor parameters
+        oracles[0] = _oracle1;
+        oracles[1] = _oracle2;
+        jobIds[0] = _jobId1;
+        jobIds[1] = _jobId2;
 
         emit contractCreated(insurer, client, duration, premium, payoutValue);
     }
@@ -999,14 +1039,18 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
             }
         } else {
             // Partial refund to client for insufficient monitoring
-            uint256 clientRefund = premium / uint256(getLatestPrice());
-            payable(client).transfer(clientRefund);
-            
             if (paymentToken == address(0)) {
+                uint256 clientRefund = premium / uint256(getLatestPrice());
+                if (clientRefund > address(this).balance) {
+                    clientRefund = address(this).balance;
+                }
+                payable(client).transfer(clientRefund);
                 payable(insurer).transfer(address(this).balance);
             } else {
                 uint256 tokenBalance = IERC20(paymentToken).balanceOf(address(this));
-                IERC20(paymentToken).safeTransfer(insurer, tokenBalance);
+                uint256 clientRefund = tokenBalance / 10;
+                IERC20(paymentToken).safeTransfer(client, clientRefund);
+                IERC20(paymentToken).safeTransfer(insurer, tokenBalance - clientRefund);
             }
         }
 
@@ -1026,11 +1070,14 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         (
             uint80 roundID,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 timeStamp,
             uint80 answeredInRound
         ) = priceFeed.latestRoundData();
         require(timeStamp > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+        require(answeredInRound >= roundID, "Stale price data");
+        require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
         return price;
     }
 
@@ -1061,8 +1108,8 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         if (provider.easEnabled() && address(provider.easManager()) != address(0)) {
             string memory evidence = string(abi.encodePacked(
                 "Drought conditions met: ",
-                "Days without rain: ", daysWithoutRain,
-                ", Final rainfall: ", currentRainfall
+                "Days without rain: ", Strings.toString(daysWithoutRain),
+                ", Final rainfall: ", Strings.toString(currentRainfall)
             ));
             
             try provider.easManager().createClaimAttestation(

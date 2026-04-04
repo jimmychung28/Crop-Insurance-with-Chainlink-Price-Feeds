@@ -29,6 +29,12 @@ contract TestHelper is Test {
     address public constant USDC_USD_PRICE_FEED = 0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
     address public constant DAI_USD_PRICE_FEED = 0x14866185B1962B63C3Ea9E03Bc1da838bab34C19;
     
+    // Test oracle addresses (must be different per oracle requirement)
+    address public constant ORACLE_1 = address(0x10);
+    address public constant ORACLE_2 = address(0x11);
+    bytes32 public constant JOB_ID_1 = "a17e8fbf4cbf46eeb79e04b3eb864a4e";
+    bytes32 public constant JOB_ID_2 = "b28f9gcg5dcg57ffc80f05c4fc975b5f";
+
     // Test parameters
     uint256 public constant DURATION_7_DAYS = 7 * DAY_IN_SECONDS;
     uint256 public constant PREMIUM_100_USD = 100 * 10**8; // 100 USD with 8 decimals
