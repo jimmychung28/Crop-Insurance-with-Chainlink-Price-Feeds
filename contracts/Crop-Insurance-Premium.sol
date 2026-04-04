@@ -900,7 +900,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     function checkEndContract() private onContractEnded() {
         //Insurer needs to have performed at least 1 weather call per day to be eligible to retrieve funds back.
         //We will allow for 1 missed weather call to account for unexpected issues on a given day.
-        if (requestCount >= (duration / DAY_IN_SECONDS - 1)) {
+        uint256 minRequests = duration >= DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 1) : 0;
+        if (requestCount >= minRequests) {
             //return funds back to insurance provider then end/kill the contract
             contractActive = false;
             

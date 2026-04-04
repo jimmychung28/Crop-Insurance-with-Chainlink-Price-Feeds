@@ -773,9 +773,10 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             uint256 ethBalance = address(this).balance;
             uint256 clientRefund = 0;
             uint256 insurerAmount = ethBalance;
-            
+
             // Check if insurer met minimum data request requirements
-            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
+            uint256 minRequests = duration >= 2 * DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 2) : 0;
+            if (requestCount < minRequests) {
                 // Insurer didn't meet requirements, client gets proportional ETH refund
                 clientRefund = (ethBalance * premium) / payoutValue;
                 if (clientRefund > ethBalance) {
@@ -800,9 +801,10 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             uint256 tokenBalance = token.balanceOf(address(this));
             uint256 clientRefund = 0;
             uint256 insurerAmount = tokenBalance;
-            
+
             // Check if insurer met minimum data request requirements
-            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
+            uint256 minTokenRequests = duration >= 2 * DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 2) : 0;
+            if (requestCount < minTokenRequests) {
                 // Refund proportional to premium/payoutValue ratio
                 clientRefund = (tokenBalance * premium) / payoutValue;
                 if (clientRefund > tokenBalance) {
