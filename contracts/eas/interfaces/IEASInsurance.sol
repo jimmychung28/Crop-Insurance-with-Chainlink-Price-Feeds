@@ -132,7 +132,6 @@ interface IEASInsurance {
     
     function revokePolicyAttestation(bytes32 uid, string calldata reason) external;
     function revokeWeatherAttestation(bytes32 uid, string calldata reason) external;
-    function revokeClaimAttestation(bytes32 uid, string calldata reason) external;
 }
 
 /**

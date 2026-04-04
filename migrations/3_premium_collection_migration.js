@@ -20,12 +20,50 @@ module.exports = async function(deployer, network, accounts) {
 
   console.log("API keys validated ✓");
 
-  // Deploy InsuranceProvider with API keys
+  // Network-specific addresses
+  const networkConfig = {
+    mainnet: {
+      linkToken: '0x514910771AF9Ca656af840dff83E8264EcF986CA',
+      ethUsdFeed: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419',
+      oracle1: process.env.ORACLE_ADDRESS_1,
+      oracle2: process.env.ORACLE_ADDRESS_2,
+      jobId1: process.env.JOB_ID_1,
+      jobId2: process.env.JOB_ID_2
+    },
+    sepolia: {
+      linkToken: '0x779877A7B0D9E8603169DdbD7836e478b4624789',
+      ethUsdFeed: '0x694AA1769357215DE4FAC081bf1f309aDC325306',
+      oracle1: process.env.ORACLE_ADDRESS_1 || '0x6090149792dAAeE9D1D568c9f9a6F6B46AA29eFD',
+      oracle2: process.env.ORACLE_ADDRESS_2 || '0x6090149792dAAeE9D1D568c9f9a6F6B46AA29eFD',
+      jobId1: process.env.JOB_ID_1 || '0x' + '0'.repeat(64),
+      jobId2: process.env.JOB_ID_2 || '0x' + '0'.repeat(64)
+    },
+    development: {
+      linkToken: '0xa36085F69e2889c224210F603D836748e7dC0088',
+      ethUsdFeed: '0x9326BFA02ADD2366b30bacB125260Af641031331',
+      oracle1: '0x05c8FaDf1798437c143683E665800D58a42b6E19',
+      oracle2: '0x240Bae5a27233fD3Ac5440b5A598467725f7d1cD',
+      jobId1: '0x' + '0'.repeat(64),
+      jobId2: '0x' + '0'.repeat(64)
+    }
+  };
+
+  const config = networkConfig[network] || networkConfig.development;
+  console.log("LINK Token:", config.linkToken);
+  console.log("ETH/USD Feed:", config.ethUsdFeed);
+
+  // Deploy InsuranceProvider with API keys and network addresses
   await deployer.deploy(
     InsuranceProvider,
     worldWeatherKey,
     openWeatherKey,
-    weatherbitKey
+    weatherbitKey,
+    config.linkToken,
+    config.ethUsdFeed,
+    config.oracle1,
+    config.oracle2,
+    config.jobId1,
+    config.jobId2
   );
 
   const provider = await InsuranceProvider.deployed();

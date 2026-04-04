@@ -5,7 +5,6 @@ import "@ethereum-attestation-service/eas-contracts/contracts/IEAS.sol";
 import "@ethereum-attestation-service/eas-contracts/contracts/ISchemaRegistry.sol";
 import "@ethereum-attestation-service/eas-contracts/contracts/Common.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 
 import "./interfaces/IEASInsurance.sol";
@@ -15,7 +14,7 @@ import "./schemas/InsuranceSchemas.sol";
  * @title EASInsuranceManager
  * @dev Central contract for managing EAS attestations in the crop insurance system
  */
-contract EASInsuranceManager is IEASInsurance, Ownable, ReentrancyGuard {
+contract EASInsuranceManager is IEASInsurance, Ownable {
     
     IEAS public immutable eas;
     ISchemaRegistry public immutable schemaRegistry;
@@ -474,10 +473,8 @@ contract EASInsuranceManager is IEASInsurance, Ownable, ReentrancyGuard {
         _revokeAttestation(uid, reason);
     }
     
-    function revokeClaimAttestation(bytes32 uid, string calldata reason) external override onlyOwner {
-        // Claims can only be revoked by owner as they should be permanent
-        _revokeAttestation(uid, reason);
-    }
+    // revokeClaimAttestation removed — claims are registered as non-revocable (revocable: false)
+    // and attempting to revoke would always revert on the EAS contract
     
     function _revokeAttestation(bytes32 uid, string calldata reason) internal {
         require(validAttestations[uid], "Attestation not found or already revoked");

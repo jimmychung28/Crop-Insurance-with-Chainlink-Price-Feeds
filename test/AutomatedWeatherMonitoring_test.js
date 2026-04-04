@@ -20,14 +20,28 @@ contract("Automated Weather Monitoring Tests", (accounts) => {
   const payoutUSD = 1000 * 10**8; // 1000 USD
   const location = "London,UK";
   
+  // Mock addresses for constructor params
+  const MOCK_LINK_TOKEN = "0xa36085F69e2889c224210F603D836748e7dC0088";
+  const MOCK_PRICE_FEED = "0x9326BFA02ADD2366b30bacB125260Af641031331";
+  const MOCK_ORACLE_1 = "0x05c8FaDf1798437c143683E665800D58a42b6E19";
+  const MOCK_ORACLE_2 = "0x240Bae5a27233fD3Ac5440b5A598467725f7d1cD";
+  const MOCK_JOB_ID_1 = web3.utils.padRight(web3.utils.asciiToHex("job1"), 64);
+  const MOCK_JOB_ID_2 = web3.utils.padRight(web3.utils.asciiToHex("job2"), 64);
+
   let provider, mockUSDC;
-  
+
   beforeEach(async () => {
     // Deploy automated insurance provider
     provider = await AutomatedInsuranceProvider.new(
       "test_world_weather_key",
-      "test_open_weather_key", 
+      "test_open_weather_key",
       "test_weatherbit_key",
+      MOCK_LINK_TOKEN,
+      MOCK_PRICE_FEED,
+      MOCK_ORACLE_1,
+      MOCK_ORACLE_2,
+      MOCK_JOB_ID_1,
+      MOCK_JOB_ID_2,
       { from: owner }
     );
     
