@@ -60,10 +60,11 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
     // Gas-optimized struct with packed storage layout
     struct PremiumInfo {
         uint128 amount;        // Sufficient for premium amounts (340 trillion max)
+        uint128 amountPaid;    // Actual ETH/token amount paid (for exact refund/claim)
         uint64 paidAt;         // Sufficient for timestamps until year 584,542,046,090
         uint64 createdAt;      // Sufficient for timestamps until year 584,542,046,090
-        address token;         // 20 bytes - fits in slot 2
-        bool paid;            // 1 byte - packed with address in slot 2
+        address token;         // 20 bytes - fits in slot 3
+        bool paid;            // 1 byte - packed with address in slot 3
     }
     
     // Automation state
@@ -164,7 +165,12 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         supportedTokens[address(0)] = true;
         lastUpkeepTimestamp = block.timestamp;
     }
-    
+
+    function transferOwnership(address newOwner) public override onlyOwner {
+        super.transferOwnership(newOwner);
+        insurer = newOwner;
+    }
+
     /**
      * @dev Set EAS Manager contract
      */
@@ -381,6 +387,7 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         // Store premium information
         premiumInfo[address(insurance)] = PremiumInfo({
             amount: uint128(_premium),
+            amountPaid: 0,
             token: _paymentToken,
             paid: false,
             paidAt: 0,
@@ -443,7 +450,8 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
             // ETH payment
             uint256 ethAmount = (info.amount * 1 ether) / uint256(getLatestPrice());
             require(msg.value >= ethAmount, "Insufficient ETH sent for premium");
-            
+            info.amountPaid = uint128(ethAmount);
+
             if (msg.value > ethAmount) {
                 (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - ethAmount}("");
                 require(refundSuccess, "ETH refund failed");
@@ -452,8 +460,9 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
             // ERC20 payment
             uint256 tokenAmount = getTokenAmountForUSD(info.token, info.amount);
             IERC20(info.token).safeTransferFrom(msg.sender, address(this), tokenAmount);
+            info.amountPaid = uint128(tokenAmount);
         }
-        
+
         info.paid = true;
         info.paidAt = uint64(block.timestamp);
         
@@ -478,6 +487,52 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
                 // Continue execution if EAS fails
             }
         }
+    }
+
+    /**
+     * @dev Refund premium if contract was never activated or monitored
+     */
+    function refundPremium(address _contract) external nonReentrant {
+        require(contracts[_contract] != AutomatedInsuranceContract(address(0)), "Contract does not exist");
+        PremiumInfo storage info = premiumInfo[_contract];
+        require(info.paid, "Premium not paid");
+        require(block.timestamp > info.createdAt + PREMIUM_GRACE_PERIOD, "Grace period not expired");
+
+        AutomatedInsuranceContract insurance = AutomatedInsuranceContract(_contract);
+        require(!insurance.isActive() || insurance.getRequestCount() == 0, "Contract is active and monitored");
+        require(insurance.client() == msg.sender || msg.sender == owner(), "Unauthorized");
+
+        uint256 refundAmount = info.amountPaid;
+        if (info.token == address(0)) {
+            (bool success, ) = payable(insurance.client()).call{value: refundAmount}("");
+            require(success, "ETH transfer failed");
+        } else {
+            IERC20(info.token).safeTransfer(insurance.client(), refundAmount);
+        }
+
+        info.paid = false;
+    }
+
+    /**
+     * @dev Insurer claims collected premiums for expired/completed contracts
+     */
+    function claimPremium(address _contract) external onlyOwner nonReentrant {
+        require(contracts[_contract] != AutomatedInsuranceContract(address(0)), "Contract does not exist");
+        PremiumInfo storage info = premiumInfo[_contract];
+        require(info.paid, "Premium not paid");
+
+        AutomatedInsuranceContract insurance = AutomatedInsuranceContract(_contract);
+        require(!insurance.isActive(), "Contract still active");
+
+        uint256 claimAmount = info.amountPaid;
+        if (info.token == address(0)) {
+            (bool success, ) = payable(insurer).call{value: claimAmount}("");
+            require(success, "ETH transfer failed");
+        } else {
+            IERC20(info.token).safeTransfer(insurer, claimAmount);
+        }
+
+        info.paid = false;
     }
 
     /**
@@ -695,6 +750,7 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     // Constants
     uint256 public constant DAY_IN_SECONDS = 86400;
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     // Contract parameters
@@ -1076,7 +1132,8 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         AutomatedInsuranceProvider(insurer).deactivateContract(address(this));
         
         // Return funds based on request count compliance
-        if (requestCount >= (duration / DAY_IN_SECONDS - 1)) {
+        uint256 minRequests = duration >= DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 1) : 0;
+        if (requestCount >= minRequests) {
             // Return payout funds to insurer
             if (paymentToken == address(0)) {
                 (bool s1, ) = payable(insurer).call{value: address(this).balance}("");
@@ -1088,9 +1145,11 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
         } else {
             // Partial refund to client for insufficient monitoring
             if (paymentToken == address(0)) {
-                uint256 clientRefund = premium / uint256(getLatestPrice());
-                if (clientRefund > address(this).balance) {
-                    clientRefund = address(this).balance;
+                // ETH refund — proportional to premium/payoutValue ratio
+                uint256 ethBalance = address(this).balance;
+                uint256 clientRefund = (ethBalance * premium) / payoutValue;
+                if (clientRefund > ethBalance) {
+                    clientRefund = ethBalance;
                 }
                 (bool s2, ) = payable(client).call{value: clientRefund}("");
                 require(s2, "ETH transfer failed");

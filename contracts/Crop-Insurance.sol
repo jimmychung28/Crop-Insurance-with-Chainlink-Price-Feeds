@@ -213,7 +213,7 @@ contract InsuranceProvider is Ownable {
      * @dev Updates the contract for a given address
      * @param _contract Address of the insurance contract to update
      */
-    function updateContract(address _contract) external {
+    function updateContract(address _contract) external onlyOwner {
         InsuranceContract i = InsuranceContract(_contract);
         i.updateContract();
     }
@@ -414,7 +414,6 @@ contract InsuranceProvider is Ownable {
             require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
 
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
-            uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
             } else if (tokenDecimals > 18) {
@@ -442,6 +441,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     uint256 public constant DAY_IN_SECONDS = 60;
     // Number of consecutive days without rainfall to be defined as a drought
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     address public insurer;
@@ -773,11 +773,12 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             uint256 ethBalance = address(this).balance;
             uint256 clientRefund = 0;
             uint256 insurerAmount = ethBalance;
-            
+
             // Check if insurer met minimum data request requirements
-            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
-                // Insurer didn't meet requirements, client gets premium refund in ETH
-                clientRefund = premium / uint256(getLatestPrice());
+            uint256 minRequests = duration >= 2 * DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 2) : 0;
+            if (requestCount < minRequests) {
+                // Insurer didn't meet requirements, client gets proportional ETH refund
+                clientRefund = (ethBalance * premium) / payoutValue;
                 if (clientRefund > ethBalance) {
                     clientRefund = ethBalance;
                 }
@@ -800,9 +801,10 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             uint256 tokenBalance = token.balanceOf(address(this));
             uint256 clientRefund = 0;
             uint256 insurerAmount = tokenBalance;
-            
+
             // Check if insurer met minimum data request requirements
-            if (requestCount < (duration / DAY_IN_SECONDS - 2)) {
+            uint256 minTokenRequests = duration >= 2 * DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 2) : 0;
+            if (requestCount < minTokenRequests) {
                 // Refund proportional to premium/payoutValue ratio
                 clientRefund = (tokenBalance * premium) / payoutValue;
                 if (clientRefund > tokenBalance) {

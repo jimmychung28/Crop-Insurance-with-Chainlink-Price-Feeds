@@ -189,6 +189,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         // Store premium information
         premiumInfo[address(i)] = PremiumInfo({
             amount: _premium,
+            amountPaid: 0,
             token: _paymentToken,
             paid: false,
             paidAt: 0,
@@ -344,7 +345,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
      * @dev Updates the contract for a given address
      * @param _contract Address of the insurance contract to update
      */
-    function updateContract(address _contract) external {
+    function updateContract(address _contract) external onlyOwner {
         InsuranceContract i = InsuranceContract(_contract);
         i.updateContract();
     }
@@ -570,6 +571,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     uint256 public constant DAY_IN_SECONDS = 60;
     // Number of consecutive days without rainfall to be defined as a drought
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     address public insurer;
@@ -898,7 +900,8 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     function checkEndContract() private onContractEnded() {
         //Insurer needs to have performed at least 1 weather call per day to be eligible to retrieve funds back.
         //We will allow for 1 missed weather call to account for unexpected issues on a given day.
-        if (requestCount >= (duration / DAY_IN_SECONDS - 1)) {
+        uint256 minRequests = duration >= DAY_IN_SECONDS ? (duration / DAY_IN_SECONDS - 1) : 0;
+        if (requestCount >= minRequests) {
             //return funds back to insurance provider then end/kill the contract
             contractActive = false;
             
@@ -915,10 +918,11 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
             contractActive = false;
 
             if (paymentToken == address(0)) {
-                // ETH refund
-                uint256 clientRefund = premium / uint256(getLatestPrice());
-                if (clientRefund > address(this).balance) {
-                    clientRefund = address(this).balance;
+                // ETH refund — proportional to premium/payoutValue ratio
+                uint256 ethBalance = address(this).balance;
+                uint256 clientRefund = (ethBalance * premium) / payoutValue;
+                if (clientRefund > ethBalance) {
+                    clientRefund = ethBalance;
                 }
                 (bool s2, ) = payable(client).call{value: clientRefund}("");
                 require(s2, "ETH transfer failed");
