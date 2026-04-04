@@ -189,6 +189,7 @@ contract InsuranceProvider is Ownable, ReentrancyGuard {
         // Store premium information
         premiumInfo[address(i)] = PremiumInfo({
             amount: _premium,
+            amountPaid: 0,
             token: _paymentToken,
             paid: false,
             paidAt: 0,
@@ -570,6 +571,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     uint256 public constant DAY_IN_SECONDS = 60;
     // Number of consecutive days without rainfall to be defined as a drought
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     address public insurer;

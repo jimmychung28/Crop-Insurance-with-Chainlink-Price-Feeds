@@ -695,6 +695,7 @@ contract AutomatedInsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard
     // Constants
     uint256 public constant DAY_IN_SECONDS = 86400;
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     // Contract parameters

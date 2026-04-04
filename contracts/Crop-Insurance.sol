@@ -414,7 +414,6 @@ contract InsuranceProvider is Ownable {
             require(block.timestamp - timeStamp < MAX_STALENESS, "Price feed too stale");
 
             uint8 tokenDecimals = IERC20Metadata(token).decimals();
-            uint8 tokenDecimals = IERC20Metadata(token).decimals();
             if (tokenDecimals < 18) {
                 amount = amount * 10**(18 - tokenDecimals);
             } else if (tokenDecimals > 18) {
@@ -442,6 +441,7 @@ contract InsuranceContract is ChainlinkClient, Ownable, ReentrancyGuard {
     uint256 public constant DAY_IN_SECONDS = 60;
     // Number of consecutive days without rainfall to be defined as a drought
     uint256 public constant DROUGHT_DAYS_THRESHOLD = 3;
+    uint256 public constant MAX_STALENESS = 3600; // 1 hour
     uint256 private oraclePaymentAmount;
 
     address public insurer;
