@@ -27,15 +27,18 @@ This platform provides parametric crop insurance that automatically pays out whe
 │   │   │   └── IEASInsurance.sol       # EAS insurance interface
 │   │   └── schemas/
 │   │       └── InsuranceSchemas.sol    # EAS schema definitions
-│   └── migrations/                     # Truffle deployment scripts
+├── frontend/                          # Next.js dApp frontend
+│   ├── src/app/farmer/                # Farmer dashboard, policy detail, payment
+│   ├── src/app/insurer/               # Insurer dashboard, create policy, automation
+│   ├── src/app/attestations/          # EAS attestation explorer
+│   ├── src/hooks/                     # Contract interaction hooks
+│   ├── src/abi/                       # Contract ABI definitions
+│   └── src/lib/                       # Shared utilities
 ├── test/
 │   ├── foundry/                       # Solidity tests (Foundry)
-│   │   ├── PremiumCollection.t.sol
-│   │   ├── AutomatedWeatherMonitoring.t.sol
-│   │   └── GasOptimization.t.sol
 │   └── *.js                          # JavaScript tests (Truffle)
 ├── scripts/                          # Deployment and utility scripts
-├── CLAUDE.md                         # Development documentation
+├── migrations/                        # Truffle deployment scripts
 └── EAS_INTEGRATION.md                # EAS benefits and implementation guide
 ```
 
@@ -47,34 +50,27 @@ This platform provides parametric crop insurance that automatically pays out whe
 - npm or yarn
 - Git
 
-### Installation
+### Smart Contracts
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/jimmychung28/Crop-Insurance-with-Chainlink-Price-Feeds.git
-   cd Crop-Insurance-with-Chainlink-Price-Feeds
-   ```
+```bash
+git clone https://github.com/jimmychung28/Crop-Insurance-with-Chainlink-Price-Feeds.git
+cd Crop-Insurance-with-Chainlink-Price-Feeds
+npm install
+cp .env.example .env    # Edit with your API keys
+npm run compile
+npm test
+```
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+### Frontend
 
-3. **Set up environment variables**:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys and network configurations
-   ```
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local   # Edit with deployed contract addresses
+npm run dev                         # Starts at http://localhost:3000
+```
 
-4. **Compile contracts**:
-   ```bash
-   npm run compile
-   ```
-
-5. **Run tests**:
-   ```bash
-   npm test
-   ```
+See [frontend/README.md](./frontend/README.md) for environment variables and route documentation.
 
 ## 🧪 Testing
 
@@ -148,6 +144,13 @@ Automated weather monitoring system:
 - **Batch processing** up to 10 contracts per upkeep
 - **Gas-efficient execution** with configurable intervals
 - **Fault tolerance** with individual contract error handling
+
+### 5. Frontend dApp
+Full two-sided web interface built with Next.js, wagmi, and Tailwind CSS:
+- **Farmer Dashboard**: Browse policies, pay premiums (ETH/USDC/DAI with approval flow), track rainfall and drought status in real time
+- **Insurer Dashboard**: Create policies, monitor active contracts, manage Chainlink Automation settings, claim premiums
+- **EAS Attestation Explorer**: Browse, search, and verify on-chain attestation records with decoded schema data
+- **Wallet Integration**: ConnectKit for MetaMask and WalletConnect on Sepolia
 
 ## 🌐 Network Support
 
@@ -247,6 +250,13 @@ npx truffle run verify [ContractName] --network live
 For detailed information about EAS benefits, see [EAS_INTEGRATION.md](./EAS_INTEGRATION.md).
 
 ## 🛠️ Development Tools
+
+### Frontend
+- **Next.js 15**: React framework with App Router and server components
+- **wagmi v2 + viem**: Type-safe Ethereum interaction and wallet hooks
+- **ConnectKit**: Wallet connection modal
+- **Tailwind CSS**: Utility-first styling
+- **@wagmi/cli**: Auto-generated typed hooks from contract ABIs
 
 ### Foundry Framework
 - **Forge**: Fast Solidity testing framework

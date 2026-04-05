@@ -56,6 +56,9 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
     
     // Premium collection tracking
     mapping(address => PremiumInfo) public premiumInfo;
+
+    // Client-to-contracts mapping for frontend discovery
+    mapping(address => address[]) private clientContracts;
     
     // Gas-optimized struct with packed storage layout
     struct PremiumInfo {
@@ -133,6 +136,20 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         address indexed contract_,
         uint8 indexed attestationType, // 0: policy, 1: premium, 2: weather, 3: claim
         bytes32 uid
+    );
+
+    event PremiumRefunded(
+        address indexed insuranceContract,
+        address indexed client,
+        uint128 amount,
+        address token
+    );
+
+    event PremiumClaimed(
+        address indexed insuranceContract,
+        address indexed insurer_,
+        uint128 amount,
+        address token
     );
 
     constructor(
@@ -383,7 +400,8 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         );
 
         contracts[address(insurance)] = insurance;
-        
+        clientContracts[_client].push(address(insurance));
+
         // Store premium information
         premiumInfo[address(insurance)] = PremiumInfo({
             amount: uint128(_premium),
@@ -511,6 +529,7 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         }
 
         info.paid = false;
+        emit PremiumRefunded(_contract, insurance.client(), uint128(refundAmount), info.token);
     }
 
     /**
@@ -533,6 +552,7 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         }
 
         info.paid = false;
+        emit PremiumClaimed(_contract, insurer, uint128(claimAmount), info.token);
     }
 
     /**
@@ -605,6 +625,13 @@ contract AutomatedInsuranceProvider is Ownable, ReentrancyGuard, AutomationCompa
         }
         
         return result;
+    }
+
+    /**
+     * @dev Get all contracts created for a specific client address
+     */
+    function getContractsByClient(address _client) external view returns (address[] memory) {
+        return clientContracts[_client];
     }
 
     /**
