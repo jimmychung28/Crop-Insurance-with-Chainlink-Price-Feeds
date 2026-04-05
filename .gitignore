@@ -55,3 +55,6 @@ broadcast/
 cache/
 artifacts/
 
+# Claude planning knowledge base
+.claude/planning-with-james/
+

@@ -709,6 +709,74 @@ contract PremiumCollectionTest is TestHelper {
         assertTrue(paidAfter);
         assertGt(paidAtAfter, 0);
     }
+
+    // =========================================================================
+    // getContractsByClient Tests
+    // =========================================================================
+
+    function test_GetContractsByClient_ReturnsEmpty() public {
+        address[] memory contracts_ = provider.getContractsByClient(CLIENT1);
+        assertEq(contracts_.length, 0);
+    }
+
+    function test_GetContractsByClient_ReturnsSingleContract() public {
+        // Create a contract for CLIENT1
+        vm.startPrank(OWNER);
+        mockPriceFeed(ETH_USD_PRICE_FEED, 2000 * 10**8);
+        uint256 fundingAmount = calculatePayoutETH(PAYOUT_1000_USD);
+        address contractAddr = provider.newContract{value: fundingAmount}(
+            CLIENT1, DURATION_7_DAYS, PREMIUM_100_USD, PAYOUT_1000_USD, LOCATION_LONDON, address(0)
+        );
+        vm.stopPrank();
+
+        address[] memory contracts_ = provider.getContractsByClient(CLIENT1);
+        assertEq(contracts_.length, 1);
+        assertEq(contracts_[0], contractAddr);
+    }
+
+    function test_GetContractsByClient_ReturnsMultipleContracts() public {
+        vm.startPrank(OWNER);
+        mockPriceFeed(ETH_USD_PRICE_FEED, 2000 * 10**8);
+        uint256 fundingAmount = calculatePayoutETH(PAYOUT_1000_USD);
+
+        address addr1 = provider.newContract{value: fundingAmount}(
+            CLIENT1, DURATION_7_DAYS, PREMIUM_100_USD, PAYOUT_1000_USD, LOCATION_LONDON, address(0)
+        );
+        address addr2 = provider.newContract{value: fundingAmount}(
+            CLIENT1, DURATION_7_DAYS, PREMIUM_100_USD, PAYOUT_1000_USD, LOCATION_PARIS, address(0)
+        );
+        vm.stopPrank();
+
+        address[] memory contracts_ = provider.getContractsByClient(CLIENT1);
+        assertEq(contracts_.length, 2);
+        assertEq(contracts_[0], addr1);
+        assertEq(contracts_[1], addr2);
+    }
+
+    function test_GetContractsByClient_DifferentClients() public {
+        vm.startPrank(OWNER);
+        mockPriceFeed(ETH_USD_PRICE_FEED, 2000 * 10**8);
+        uint256 fundingAmount = calculatePayoutETH(PAYOUT_1000_USD);
+
+        provider.newContract{value: fundingAmount}(
+            CLIENT1, DURATION_7_DAYS, PREMIUM_100_USD, PAYOUT_1000_USD, LOCATION_LONDON, address(0)
+        );
+        provider.newContract{value: fundingAmount}(
+            CLIENT2, DURATION_7_DAYS, PREMIUM_100_USD, PAYOUT_1000_USD, LOCATION_PARIS, address(0)
+        );
+        vm.stopPrank();
+
+        assertEq(provider.getContractsByClient(CLIENT1).length, 1);
+        assertEq(provider.getContractsByClient(CLIENT2).length, 1);
+        assertEq(provider.getContractsByClient(CLIENT3).length, 0);
+    }
+
+    // =========================================================================
+    // PremiumRefunded / PremiumClaimed Event Tests
+    // =========================================================================
+
+    event PremiumRefunded(address indexed insuranceContract, address indexed client, uint128 amount, address token);
+    event PremiumClaimed(address indexed insuranceContract, address indexed insurer_, uint128 amount, address token);
 }
 
 /**
